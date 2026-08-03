@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+data/*.db
+.docx_render/
+.streamlit/secrets.toml
+outputs/
+tools/
+tests/
+.excel_build/
+*.docx
