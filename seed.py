@@ -11,6 +11,7 @@ from domain.rules import (
     DEMO_REQUEST_QUANTITY,
     DEMO_SHIPMENT_QUANTITY,
     MATERIAL_ITEM_CODES,
+    PACKAGING_CAPACITY_PER_MINUTE,
     PRODUCT_MATERIAL_CODES,
     RAW_MATERIAL_SAFETY_STOCK,
 )
@@ -53,10 +54,18 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
         )
         connection.execute("DELETE FROM equipment")
         connection.executemany(
-            "INSERT INTO equipment(equipment_code,equipment_name,equipment_type,location) VALUES(?,?,?,?)",
+            """INSERT INTO equipment(
+                   equipment_code,equipment_name,equipment_type,location,capacity_per_minute
+               ) VALUES(?,?,?,?,?)""",
             [
-                ("EQ-PACK-01", "라면 포장 1호기", "포장설비", "1공장"),
-                ("EQ-PACK-02", "라면 포장 2호기", "포장설비", "1공장"),
+                (
+                    "EQ-PACK-01", "라면 포장 1호기", "포장설비", "1공장",
+                    PACKAGING_CAPACITY_PER_MINUTE,
+                ),
+                (
+                    "EQ-PACK-02", "라면 포장 2호기", "포장설비", "1공장",
+                    PACKAGING_CAPACITY_PER_MINUTE,
+                ),
             ],
         )
 
@@ -131,8 +140,13 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
             required_material_codes = PRODUCT_MATERIAL_CODES[product_code]
             request_no = f"REQ-{production_date:%Y%m%d}-{request_index:03d}"
             request_id = connection.execute(
-                "INSERT INTO production_request(request_no,item_id,requested_qty,request_date,status) VALUES(?,?,?,?, 'COMPLETED')",
-                (request_no, product_id, DEMO_REQUEST_QUANTITY, production_date.isoformat()),
+                """INSERT INTO production_request(
+                       request_no,item_id,equipment_id,requested_qty,request_date,status
+                   ) VALUES(?,?,?,?,?, 'COMPLETED')""",
+                (
+                    request_no, product_id, equipment_id,
+                    DEMO_REQUEST_QUANTITY, production_date.isoformat(),
+                ),
             ).lastrowid
             product_lot_ids: list[int] = []
 
@@ -199,8 +213,9 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
                     ],
                 )
 
-            planned_minutes = 540
             downtime_minutes = rng.randint(20, 55)
+            running_minutes = int(DEMO_REQUEST_QUANTITY / PACKAGING_CAPACITY_PER_MINUTE)
+            planned_minutes = running_minutes + downtime_minutes
             first_production = connection.execute(
                 "SELECT production_id FROM production_request_unit WHERE production_request_id=? ORDER BY production_id LIMIT 1",
                 (request_id,),
@@ -212,7 +227,7 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
                     first_production,
                     production_date.isoformat(),
                     planned_minutes,
-                    planned_minutes - downtime_minutes,
+                    running_minutes,
                     downtime_minutes,
                     "품목 교체 및 세척",
                 ),

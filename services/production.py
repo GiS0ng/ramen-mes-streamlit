@@ -1,7 +1,42 @@
 from __future__ import annotations
 
+from datetime import date
+
 import db
 from domain.rules import BOX_SIZE, PRODUCT_MATERIAL_CODES
+
+
+def create_plan(equipment_id: int, product_id: int, quantity: int) -> int:
+    """설비·제품·수량을 기준으로 생산 계획서를 등록한다."""
+    if quantity <= 0:
+        raise ValueError("생산수량은 1개 이상이어야 합니다.")
+
+    with db.transaction() as connection:
+        equipment = connection.execute(
+            "SELECT 1 FROM equipment WHERE equipment_id=? AND is_active='Y'",
+            (equipment_id,),
+        ).fetchone()
+        product = connection.execute(
+            "SELECT 1 FROM item WHERE item_id=? AND item_type='PRODUCT' AND is_active='Y'",
+            (product_id,),
+        ).fetchone()
+        if equipment is None:
+            raise ValueError("사용 가능한 설비를 선택해 주세요.")
+        if product is None:
+            raise ValueError("사용 가능한 완제품 품목을 선택해 주세요.")
+
+        today = date.today()
+        next_id = connection.execute(
+            "SELECT COALESCE(MAX(production_request_id),0)+1 FROM production_request"
+        ).fetchone()[0]
+        request_no = f"PLAN-{today:%Y%m%d}-{next_id:04d}"
+        cursor = connection.execute(
+            """INSERT INTO production_request(
+                   request_no,item_id,equipment_id,requested_qty,request_date,status
+               ) VALUES(?,?,?,?,?, 'PLANNED')""",
+            (request_no, product_id, equipment_id, quantity, today.isoformat()),
+        )
+        return int(cursor.lastrowid)
 
 
 def create_request(request_no: str, product_id: int, equipment_id: int | None, production_date: str, quantity: int) -> int:
@@ -31,8 +66,10 @@ def create_request(request_no: str, product_id: int, equipment_id: int | None, p
             material_lots[code] = [row[0] for row in rows]
 
         request_id = connection.execute(
-            "INSERT INTO production_request(request_no,item_id,requested_qty,request_date,status) VALUES(?,?,?,?, 'COMPLETED')",
-            (request_no, product_id, quantity, production_date),
+            """INSERT INTO production_request(
+                   request_no,item_id,equipment_id,requested_qty,request_date,status
+               ) VALUES(?,?,?,?,?, 'COMPLETED')""",
+            (request_no, product_id, equipment_id, quantity, production_date),
         ).lastrowid
         product_lots: list[int] = []
         for index in range(quantity):
@@ -79,6 +116,12 @@ def register_material(production_id: int, material_lot_id: int, quantity: float)
 
 
 def register_defect(production_id: int, defect_code_id: int, quantity: float, defect_date: str, memo: str) -> int:
+    production = db.query(
+        "SELECT 1 FROM production WHERE production_id=? AND status='COMPLETED'",
+        (production_id,),
+    )
+    if not production:
+        raise ValueError("완료된 생산 LOT만 불량 등록할 수 있습니다.")
     return db.execute(
         "INSERT INTO production_defect(production_id,defect_code_id,defect_qty,defect_date,memo) VALUES(?,?,?,?,?)",
         (production_id, defect_code_id, quantity, defect_date, memo),

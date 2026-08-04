@@ -14,7 +14,9 @@ CREATE TABLE IF NOT EXISTS business_partner (
 );
 CREATE TABLE IF NOT EXISTS equipment (
  equipment_id INTEGER PRIMARY KEY, equipment_code TEXT NOT NULL UNIQUE, equipment_name TEXT NOT NULL,
- equipment_type TEXT, location TEXT, status TEXT NOT NULL DEFAULT 'AVAILABLE'
+ equipment_type TEXT, location TEXT,
+ capacity_per_minute REAL NOT NULL DEFAULT 1 CHECK(capacity_per_minute>0),
+ status TEXT NOT NULL DEFAULT 'AVAILABLE'
  CHECK(status IN ('AVAILABLE','RUNNING','STOPPED','MAINTENANCE')),
  is_active TEXT NOT NULL DEFAULT 'Y' CHECK(is_active IN ('Y','N'))
 );
@@ -84,7 +86,8 @@ CREATE TABLE IF NOT EXISTS product_box (
 );
 CREATE TABLE IF NOT EXISTS production_request (
  production_request_id INTEGER PRIMARY KEY, request_no TEXT NOT NULL UNIQUE,
- item_id INTEGER NOT NULL REFERENCES item(item_id), requested_qty INTEGER NOT NULL CHECK(requested_qty>0),
+ item_id INTEGER NOT NULL REFERENCES item(item_id), equipment_id INTEGER REFERENCES equipment(equipment_id),
+ requested_qty INTEGER NOT NULL CHECK(requested_qty>0),
  request_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'COMPLETED'
  CHECK(status IN ('PLANNED','IN_PROGRESS','COMPLETED','CANCELED')),
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

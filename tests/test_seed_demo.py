@@ -22,6 +22,9 @@ def test_demo_has_no_palm_oil():
     assert [row[0] for row in db.query("SELECT equipment_name FROM equipment ORDER BY equipment_code")] == [
         "라면 포장 1호기", "라면 포장 2호기"
     ]
+    assert [row[0] for row in db.query(
+        "SELECT capacity_per_minute FROM equipment ORDER BY equipment_code"
+    )] == [1, 1]
     assert not db.query("SELECT 1 FROM equipment WHERE equipment_name LIKE '%자동 포장기%'")
     assert not db.query("SELECT 1 FROM business_partner WHERE partner_name='청정유지'")
 
@@ -74,6 +77,18 @@ def test_product_unit_has_three_unit_material_lots():
                for _, product_qty, component_count, component_qty in rows)
     assert db.query("""SELECT COUNT(*) FROM lot
         WHERE lot_type IN ('RECEIPT','PRODUCTION') AND (initial_qty<>1 OR qty NOT IN (0,1))""")[0][0] == 0
+
+
+def test_packaging_operation_uses_one_product_per_minute():
+    operations = db.query(
+        "SELECT planned_minutes,running_minutes,downtime_minutes FROM equipment_operation"
+    )
+    assert operations
+    assert all(running_minutes == 1000 for _, running_minutes, _ in operations)
+    assert all(
+        planned_minutes == running_minutes + downtime_minutes
+        for planned_minutes, running_minutes, downtime_minutes in operations
+    )
 
 
 def test_each_product_uses_its_recipe_materials():

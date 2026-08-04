@@ -7,7 +7,7 @@ from typing import Sequence
 
 import pandas as pd
 
-from domain.rules import RAW_MATERIAL_SAFETY_STOCK
+from domain.rules import PACKAGING_CAPACITY_PER_MINUTE, RAW_MATERIAL_SAFETY_STOCK
 
 
 ROOT = Path(__file__).resolve().parent
@@ -21,6 +21,8 @@ def connect() -> sqlite3.Connection:
     connection = sqlite3.connect(DB_PATH, timeout=10)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    _migrate_schema(connection)
+    connection.commit()
     return connection
 
 
@@ -41,8 +43,31 @@ def transaction():
 def initialize() -> None:
     with connect() as connection:
         connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        _migrate_schema(connection)
         connection.commit()
     seed_masters()
+
+
+def _migrate_schema(connection: sqlite3.Connection) -> None:
+    """기존 배포 DB에 새 컬럼을 비파괴 방식으로 추가한다."""
+    production_request_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(production_request)")
+    }
+    if not production_request_columns:
+        return
+    if "equipment_id" not in production_request_columns:
+        connection.execute(
+            "ALTER TABLE production_request ADD COLUMN equipment_id INTEGER REFERENCES equipment(equipment_id)"
+        )
+
+    equipment_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(equipment)")
+    }
+    if equipment_columns and "capacity_per_minute" not in equipment_columns:
+        connection.execute(
+            """ALTER TABLE equipment ADD COLUMN capacity_per_minute REAL
+               NOT NULL DEFAULT 1 CHECK(capacity_per_minute>0)"""
+        )
 
 
 def execute(sql: str, params: Sequence = ()) -> int:
@@ -96,8 +121,13 @@ def seed_masters() -> None:
             ],
         )
         connection.execute(
-            "INSERT OR IGNORE INTO equipment(equipment_code,equipment_name,equipment_type,location) VALUES(?,?,?,?)",
-            ("EQ-PACK-01", "라면 포장 1호기", "포장설비", "1공장"),
+            """INSERT OR IGNORE INTO equipment(
+                   equipment_code,equipment_name,equipment_type,location,capacity_per_minute
+               ) VALUES(?,?,?,?,?)""",
+            (
+                "EQ-PACK-01", "라면 포장 1호기", "포장설비", "1공장",
+                PACKAGING_CAPACITY_PER_MINUTE,
+            ),
         )
         connection.executemany(
             "INSERT OR IGNORE INTO defect_code(defect_code,defect_name,description) VALUES(?,?,?)",

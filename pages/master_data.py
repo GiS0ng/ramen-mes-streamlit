@@ -43,14 +43,19 @@ with partner_tab:
 
 with equipment_tab:
     with st.form("equipment"):
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         code = c1.text_input("설비 코드*")
         name = c2.text_input("설비명*")
         equipment_type = c3.text_input("설비 유형")
         location = c4.text_input("설치 위치")
+        capacity_per_minute = c5.number_input(
+            "분당 생산능력*", min_value=0.01, value=1.0, step=0.1
+        )
         if st.form_submit_button("설비 등록", type="primary"):
             run_action(
-                lambda: master_data.create_equipment(code, name, equipment_type, location),
+                lambda: master_data.create_equipment(
+                    code, name, equipment_type, location, capacity_per_minute
+                ),
                 "설비를 등록했습니다.",
             )
-    grid("SELECT equipment_code 코드,equipment_name 설비명,equipment_type 유형,location 위치,status 상태 FROM equipment ORDER BY equipment_code")
+    grid("SELECT equipment_code 코드,equipment_name 설비명,equipment_type 유형,location 위치,capacity_per_minute 분당생산능력,status 상태 FROM equipment ORDER BY equipment_code")
