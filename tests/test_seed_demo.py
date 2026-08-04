@@ -1,4 +1,5 @@
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import db
+from domain.rules import PRODUCT_MATERIAL_CODES
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -24,6 +26,43 @@ def test_demo_has_no_palm_oil():
     assert not db.query("SELECT 1 FROM business_partner WHERE partner_name='청정유지'")
 
 
+def test_primary_partners_have_demo_contact_details():
+    partners = {
+        row[0]: tuple(row[1:])
+        for row in db.query("""SELECT partner_code,partner_name,phone,email,address
+                               FROM business_partner
+                               WHERE partner_code IN ('SUP-001','CUS-001')""")
+    }
+    assert partners["CUS-001"] == (
+        "행복마트", "02-3456-7890", "contact@haengbokmart.example",
+        "서울특별시 송파구 올림픽로 120",
+    )
+    assert partners["SUP-001"] == (
+        "대한 식품원료", "031-456-7890", "sales@daehan-food.example",
+        "경기도 성남시 중원구 산업로 85",
+    )
+
+
+def test_demo_spans_current_and_previous_two_months():
+    month_index = date.today().year * 12 + date.today().month - 1
+    expected_months = {
+        f"{year:04d}-{month + 1:02d}"
+        for year, month in (divmod(month_index - offset, 12) for offset in range(3))
+    }
+    for table, date_column in (
+        ("material_receipt", "receipt_date"),
+        ("production", "production_date"),
+        ("shipment", "shipment_date"),
+    ):
+        actual_months = {
+            row[0]
+            for row in db.query(
+                f"SELECT DISTINCT substr({date_column},1,7) FROM {table}"
+            )
+        }
+        assert actual_months == expected_months
+
+
 def test_product_unit_has_three_unit_material_lots():
     rows = db.query("""
         SELECT p.production_id,p.qty,COUNT(pm.production_material_id),SUM(pm.qty)
@@ -35,6 +74,29 @@ def test_product_unit_has_three_unit_material_lots():
                for _, product_qty, component_count, component_qty in rows)
     assert db.query("""SELECT COUNT(*) FROM lot
         WHERE lot_type IN ('RECEIPT','PRODUCTION') AND (initial_qty<>1 OR qty NOT IN (0,1))""")[0][0] == 0
+
+
+def test_each_product_uses_its_recipe_materials():
+    rows = db.query("""
+        SELECT pi.item_code,mi.item_code
+        FROM production p
+        JOIN item pi ON pi.item_id=p.item_id
+        JOIN production_material pm ON pm.production_id=p.production_id
+        JOIN lot ml ON ml.lot_id=pm.material_lot_id
+        JOIN item mi ON mi.item_id=ml.item_id
+        GROUP BY pi.item_code,mi.item_code
+        ORDER BY pi.item_code,mi.item_code
+    """)
+    actual: dict[str, set[str]] = {}
+    for product_code, material_code in rows:
+        actual.setdefault(product_code, set()).add(material_code)
+    assert actual == {
+        product_code: set(material_codes)
+        for product_code, material_codes in PRODUCT_MATERIAL_CODES.items()
+    }
+    assert not db.query(
+        "SELECT 1 FROM item WHERE item_code IN ('RM-SOUP','RM-PACK')"
+    )
 
 
 def test_finished_product_reverse_trace_excludes_box():

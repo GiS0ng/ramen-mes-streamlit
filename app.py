@@ -46,7 +46,7 @@ with st.sidebar:
     st.caption("SQLite · LOT 기반 재고 · 트리거 자동 차감")
     st.info("공개 데모 환경입니다. 서버 재시작 또는 재배포 시 입력 데이터가 초기화될 수 있습니다.")
     if st.button("더미 데이터 생성", type="primary", width="stretch"):
-        run_action(db.seed_demo, "최근 30일 기준 더미 데이터를 생성했습니다.")
+        run_action(db.seed_demo, "현재 월을 포함한 최근 3개월의 더미 데이터를 생성했습니다.")
     if st.button("데모 데이터 초기화", width="stretch"):
         run_action(db.reset_demo, "데이터베이스를 초기화했습니다.")
 

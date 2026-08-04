@@ -15,6 +15,18 @@ labels = ["오늘 생산 건", "오늘 생산량", "오늘 불량", "오늘 출�
 for column, label, value in zip(columns, labels, metrics):
     column.metric(label, f"{value:,.0f}" if isinstance(value, (int, float)) else value)
 
+st.subheader("현재 완제품 재고 · 제품별 총합")
+finished_inventory = dashboard_repository.finished_goods_inventory()
+if finished_inventory.empty:
+    st.info("등록된 완제품이 없습니다.")
+else:
+    inventory_columns = st.columns(len(finished_inventory))
+    for column, (_, row) in zip(inventory_columns, finished_inventory.iterrows()):
+        column.metric(
+            f"{row['제품명']} 총합",
+            f"{row['총재고']:,.0f} {row['단위']}",
+        )
+
 left, right = st.columns([3, 2])
 with left:
     st.subheader("최근 생산 수율")

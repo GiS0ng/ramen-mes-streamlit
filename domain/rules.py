@@ -1,4 +1,15 @@
-MATERIAL_ITEM_CODES = ("RM-NOODLE", "RM-SOUP", "RM-PACK")
+PRODUCT_MATERIAL_CODES = {
+    "FG-RAMEN": ("RM-NOODLE", "RM-SOUP-REGULAR", "RM-PACK-REGULAR"),
+    "FG-SPICY": ("RM-NOODLE", "RM-SOUP-SPICY", "RM-PACK-SPICY"),
+    "FG-MILD": ("RM-NOODLE", "RM-SOUP-MILD", "RM-PACK-MILD"),
+}
+MATERIAL_ITEM_CODES = tuple(
+    dict.fromkeys(
+        material_code
+        for recipe in PRODUCT_MATERIAL_CODES.values()
+        for material_code in recipe
+    )
+)
 BOX_SIZE = 40
 RAW_MATERIAL_SAFETY_STOCK = 500
 

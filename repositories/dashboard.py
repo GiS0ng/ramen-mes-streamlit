@@ -22,6 +22,17 @@ def summary_metrics():
     )[0]
 
 
+def finished_goods_inventory() -> pd.DataFrame:
+    return db.dataframe(
+        """SELECT i.item_name 제품명,COALESCE(SUM(l.qty),0) 총재고,i.unit 단위
+        FROM item i
+        LEFT JOIN lot l ON l.item_id=i.item_id AND l.lot_type='PRODUCTION'
+        WHERE i.item_type='PRODUCT' AND i.is_active='Y'
+        GROUP BY i.item_id,i.item_name,i.unit
+        ORDER BY i.item_id"""
+    )
+
+
 def equipment_yield(days: int | None = None) -> pd.DataFrame:
     date_filter = "AND p.production_date>=date('now', ?)" if days is not None else ""
     params = (f"-{days} day",) if days is not None else ()

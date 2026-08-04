@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import db
-from domain.rules import BOX_SIZE, MATERIAL_ITEM_CODES
+from domain.rules import BOX_SIZE, PRODUCT_MATERIAL_CODES
 
 
 def create_request(request_no: str, product_id: int, equipment_id: int | None, production_date: str, quantity: int) -> int:
@@ -10,8 +10,16 @@ def create_request(request_no: str, product_id: int, equipment_id: int | None, p
         raise ValueError("생산 요청수량은 1개 이상이어야 합니다.")
 
     with db.transaction() as connection:
+        product = connection.execute(
+            "SELECT item_code FROM item WHERE item_id=? AND item_type='PRODUCT'",
+            (product_id,),
+        ).fetchone()
+        if product is None or product[0] not in PRODUCT_MATERIAL_CODES:
+            raise ValueError("등록된 제품별 원재료 조합이 없습니다.")
+        required_material_codes = PRODUCT_MATERIAL_CODES[product[0]]
+
         material_lots: dict[str, list[int]] = {}
-        for code in MATERIAL_ITEM_CODES:
+        for code in required_material_codes:
             rows = connection.execute(
                 """SELECT l.lot_id FROM lot l JOIN item i ON i.item_id=l.item_id
                 WHERE i.item_code=? AND l.lot_type='RECEIPT' AND l.qty=1
@@ -41,7 +49,7 @@ def create_request(request_no: str, product_id: int, equipment_id: int | None, p
                 "INSERT INTO production_request_unit(production_request_id,production_id) VALUES(?,?)",
                 (request_id, production_id),
             )
-            for code in MATERIAL_ITEM_CODES:
+            for code in required_material_codes:
                 connection.execute(
                     "INSERT INTO production_material(production_id,material_lot_id,qty) VALUES(?,?,1)",
                     (production_id, material_lots[code][index]),

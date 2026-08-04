@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from calendar import monthrange
 from datetime import date, timedelta
 
 import db
@@ -10,16 +11,29 @@ from domain.rules import (
     DEMO_REQUEST_QUANTITY,
     DEMO_SHIPMENT_QUANTITY,
     MATERIAL_ITEM_CODES,
+    PRODUCT_MATERIAL_CODES,
     RAW_MATERIAL_SAFETY_STOCK,
 )
 
 
-def seed_demo(days: int = 30, seed: int = 20260803) -> None:
-    """생산요청별 낱개 완제품·원재료 LOT와 40개입 박스를 생성한다."""
-    del days  # 공개 호출 규격을 유지하되 현재 낱개 LOT 데모는 고정 시나리오를 사용한다.
+def _month_date(reference_date: date, months_ago: int) -> date:
+    """기준일을 넘지 않는 해당 월의 대표 작업일을 반환한다."""
+    month_index = reference_date.year * 12 + reference_date.month - 1 - months_ago
+    year, zero_based_month = divmod(month_index, 12)
+    month = zero_based_month + 1
+    day = min(reference_date.day, 10, monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def seed_demo(days: int = 90, seed: int = 20260803) -> None:
+    """현재 월을 포함한 최근 3개월의 MES 연계 더미 데이터를 생성한다."""
+    del days  # 이전 공개 호출 규격을 유지하며 데이터 범위는 최근 3개월로 고정한다.
     db.reset_demo()
     rng = random.Random(seed)
-    base_date = date.today() - timedelta(days=4)
+    production_dates = [
+        _month_date(date.today(), months_ago)
+        for months_ago in range(DEMO_REQUEST_COUNT - 1, -1, -1)
+    ]
 
     with db.transaction() as connection:
         connection.executemany(
@@ -53,6 +67,10 @@ def seed_demo(days: int = 30, seed: int = 20260803) -> None:
         products = connection.execute(
             "SELECT item_id,item_code FROM item WHERE item_type='PRODUCT' ORDER BY item_id"
         ).fetchall()
+        product_runs = [
+            (production_date, *products[index % len(products)])
+            for index, production_date in enumerate(production_dates)
+        ]
         supplier = connection.execute(
             "SELECT partner_id FROM business_partner WHERE partner_code='SUP-001'"
         ).fetchone()[0]
@@ -65,40 +83,52 @@ def seed_demo(days: int = 30, seed: int = 20260803) -> None:
         equipment_ids = [row[0] for row in connection.execute("SELECT equipment_id FROM equipment ORDER BY equipment_id")]
         defect_codes = [row[0] for row in connection.execute("SELECT defect_code_id FROM defect_code ORDER BY defect_code_id")]
 
-        required_units = DEMO_REQUEST_QUANTITY * DEMO_REQUEST_COUNT
         material_lots: dict[str, list[int]] = {code: [] for code in MATERIAL_ITEM_CODES}
 
         for material_index, code in enumerate(MATERIAL_ITEM_CODES, 1):
             item_id = material_ids[code]
-            order_id = connection.execute(
-                "INSERT INTO purchase_order(purchase_order_no,supplier_id,order_date,expected_date,status,memo) VALUES(?,?,?,?,?,?)",
-                (f"PO-UNIT-{material_index:02d}", supplier, base_date.isoformat(), base_date.isoformat(), "RECEIVED", "낱개 LOT 입고"),
-            ).lastrowid
-            detail_id = connection.execute(
-                "INSERT INTO purchase_order_detail(purchase_order_id,material_item_id,order_qty,received_qty,unit_price) VALUES(?,?,?,?,?)",
-                (order_id, item_id, required_units, required_units, rng.randint(80, 500)),
-            ).lastrowid
-            for unit_no in range(1, required_units + 1):
-                lot_id = connection.execute(
-                    "INSERT INTO lot(lot_no,item_id,lot_type,initial_qty,qty,received_date,expire_date) VALUES(?,?, 'RECEIPT',1,1,?,?)",
+            demand_dates = [
+                production_date
+                for production_date, _, product_code in product_runs
+                if code in PRODUCT_MATERIAL_CODES[product_code]
+            ]
+            for batch_index, production_date in enumerate(demand_dates, 1):
+                receipt_date = production_date.replace(day=1)
+                order_id = connection.execute(
+                    "INSERT INTO purchase_order(purchase_order_no,supplier_id,order_date,expected_date,status,memo) VALUES(?,?,?,?,?,?)",
                     (
-                        f"{code}-{base_date:%Y%m%d}-{unit_no:05d}",
-                        item_id,
-                        base_date.isoformat(),
-                        (base_date + timedelta(days=180)).isoformat(),
+                        f"PO-{receipt_date:%Y%m}-{material_index:02d}", supplier,
+                        receipt_date.isoformat(), receipt_date.isoformat(), "RECEIVED",
+                        "월별 낱개 LOT 입고",
                     ),
                 ).lastrowid
-                connection.execute(
-                    "INSERT INTO material_receipt(receipt_no,purchase_order_detail_id,material_lot_id,receipt_date,receipt_qty) VALUES(?,?,?,?,1)",
-                    (f"RCV-{material_index:02d}-{unit_no:05d}", detail_id, lot_id, base_date.isoformat()),
-                )
-                material_lots[code].append(lot_id)
+                detail_id = connection.execute(
+                    "INSERT INTO purchase_order_detail(purchase_order_id,material_item_id,order_qty,received_qty,unit_price) VALUES(?,?,?,?,?)",
+                    (order_id, item_id, DEMO_REQUEST_QUANTITY, DEMO_REQUEST_QUANTITY, rng.randint(80, 500)),
+                ).lastrowid
+                for unit_no in range(1, DEMO_REQUEST_QUANTITY + 1):
+                    lot_id = connection.execute(
+                        "INSERT INTO lot(lot_no,item_id,lot_type,initial_qty,qty,received_date,expire_date) VALUES(?,?, 'RECEIPT',1,1,?,?)",
+                        (
+                            f"{code}-{receipt_date:%Y%m%d}-{unit_no:05d}",
+                            item_id,
+                            receipt_date.isoformat(),
+                            (receipt_date + timedelta(days=180)).isoformat(),
+                        ),
+                    ).lastrowid
+                    connection.execute(
+                        "INSERT INTO material_receipt(receipt_no,purchase_order_detail_id,material_lot_id,receipt_date,receipt_qty) VALUES(?,?,?,?,1)",
+                        (
+                            f"RCV-{material_index:02d}-{batch_index:02d}-{unit_no:05d}",
+                            detail_id, lot_id, receipt_date.isoformat(),
+                        ),
+                    )
+                    material_lots[code].append(lot_id)
 
-        material_cursor = 0
-        for request_index in range(1, DEMO_REQUEST_COUNT + 1):
-            production_date = base_date + timedelta(days=request_index)
-            product_id, product_code = products[(request_index - 1) % len(products)]
+        material_offsets = {code: 0 for code in MATERIAL_ITEM_CODES}
+        for request_index, (production_date, product_id, product_code) in enumerate(product_runs, 1):
             equipment_id = equipment_ids[(request_index - 1) % len(equipment_ids)]
+            required_material_codes = PRODUCT_MATERIAL_CODES[product_code]
             request_no = f"REQ-{production_date:%Y%m%d}-{request_index:03d}"
             request_id = connection.execute(
                 "INSERT INTO production_request(request_no,item_id,requested_qty,request_date,status) VALUES(?,?,?,?, 'COMPLETED')",
@@ -136,8 +166,8 @@ def seed_demo(days: int = 30, seed: int = 20260803) -> None:
                     "INSERT INTO production_request_unit(production_request_id,production_id) VALUES(?,?)",
                     (request_id, production_id),
                 )
-                component_index = material_cursor + unit_no - 1
-                for code in MATERIAL_ITEM_CODES:
+                for code in required_material_codes:
+                    component_index = material_offsets[code] + unit_no - 1
                     connection.execute(
                         "INSERT INTO production_material(production_id,material_lot_id,qty) VALUES(?,?,1)",
                         (production_id, material_lots[code][component_index]),
@@ -149,7 +179,8 @@ def seed_demo(days: int = 30, seed: int = 20260803) -> None:
                         "INSERT INTO production_defect(production_id,defect_code_id,defect_qty,defect_date,memo) VALUES(?,?,?,?,?)",
                         (production_id, defect_codes[unit_no % len(defect_codes)], 1, production_date.isoformat(), "낱개 불량 샘플"),
                     )
-            material_cursor += DEMO_REQUEST_QUANTITY
+            for code in required_material_codes:
+                material_offsets[code] += DEMO_REQUEST_QUANTITY
 
             for box_index in range(DEMO_REQUEST_QUANTITY // BOX_SIZE):
                 box_id = connection.execute(
@@ -193,7 +224,7 @@ def seed_demo(days: int = 30, seed: int = 20260803) -> None:
                     f"SCH-UNIT-{request_index:03d}",
                     customers[request_index % len(customers)],
                     product_id,
-                    (production_date + timedelta(days=1)).isoformat(),
+                    production_date.isoformat(),
                     DEMO_SHIPMENT_QUANTITY,
                 ),
             ).lastrowid
@@ -203,7 +234,7 @@ def seed_demo(days: int = 30, seed: int = 20260803) -> None:
                     f"SHP-UNIT-{request_index:03d}",
                     schedule_id,
                     customers[request_index % len(customers)],
-                    (production_date + timedelta(days=1)).isoformat(),
+                    production_date.isoformat(),
                     "낱개 LOT 출하",
                 ),
             ).lastrowid

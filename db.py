@@ -71,14 +71,29 @@ def seed_masters() -> None:
             "INSERT OR IGNORE INTO item(item_code,item_name,item_type,unit,safety_stock) VALUES(?,?,?,?,?)",
             [
                 ("RM-NOODLE", "라면 면", "MATERIAL", "EA", RAW_MATERIAL_SAFETY_STOCK),
-                ("RM-SOUP", "분말 스프", "MATERIAL", "EA", RAW_MATERIAL_SAFETY_STOCK),
-                ("RM-PACK", "포장지", "MATERIAL", "EA", RAW_MATERIAL_SAFETY_STOCK),
-                ("FG-RAMEN", "봉지 라면", "PRODUCT", "EA", RAW_MATERIAL_SAFETY_STOCK),
+                ("RM-SOUP-REGULAR", "일반 스프", "MATERIAL", "EA", RAW_MATERIAL_SAFETY_STOCK),
+                ("RM-PACK-REGULAR", "일반맛 포장지", "MATERIAL", "EA", RAW_MATERIAL_SAFETY_STOCK),
+                ("RM-SOUP-SPICY", "매운맛 스프", "MATERIAL", "EA", RAW_MATERIAL_SAFETY_STOCK),
+                ("RM-PACK-SPICY", "매운맛 포장지", "MATERIAL", "EA", RAW_MATERIAL_SAFETY_STOCK),
+                ("RM-SOUP-MILD", "순한맛 스프", "MATERIAL", "EA", RAW_MATERIAL_SAFETY_STOCK),
+                ("RM-PACK-MILD", "순한맛 포장지", "MATERIAL", "EA", RAW_MATERIAL_SAFETY_STOCK),
+                ("FG-RAMEN", "일반맛 봉지 라면", "PRODUCT", "EA", RAW_MATERIAL_SAFETY_STOCK),
             ],
         )
         connection.executemany(
-            "INSERT OR IGNORE INTO business_partner(partner_code,partner_name,partner_type) VALUES(?,?,?)",
-            [("SUP-001", "대한식품원료", "SUPPLIER"), ("CUS-001", "행복마트", "CUSTOMER")],
+            """INSERT OR IGNORE INTO business_partner(
+                   partner_code,partner_name,partner_type,phone,email,address
+               ) VALUES(?,?,?,?,?,?)""",
+            [
+                (
+                    "SUP-001", "대한 식품원료", "SUPPLIER", "031-456-7890",
+                    "sales@daehan-food.example", "경기도 성남시 중원구 산업로 85",
+                ),
+                (
+                    "CUS-001", "행복마트", "CUSTOMER", "02-3456-7890",
+                    "contact@haengbokmart.example", "서울특별시 송파구 올림픽로 120",
+                ),
+            ],
         )
         connection.execute(
             "INSERT OR IGNORE INTO equipment(equipment_code,equipment_name,equipment_type,location) VALUES(?,?,?,?)",
@@ -114,7 +129,7 @@ def reset_demo() -> None:
     seed_masters()
 
 
-def seed_demo(days: int = 30, seed: int = 20260803) -> None:
+def seed_demo(days: int = 90, seed: int = 20260803) -> None:
     """공개 API 호환성을 유지하면서 전용 더미 데이터 모듈에 위임한다."""
     from seed import seed_demo as build_demo
 

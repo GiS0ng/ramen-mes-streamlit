@@ -6,6 +6,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import db
+from domain.rules import MATERIAL_ITEM_CODES
+from repositories import dashboard as dashboard_repository
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -42,6 +44,19 @@ def test_finished_goods_stock_is_non_negative():
     assert stock >= 0
 
 
+def test_finished_goods_stock_is_grouped_by_product_name():
+    inventory = dashboard_repository.finished_goods_inventory()
+    assert inventory.set_index("제품명")["총재고"].to_dict() == {
+        "일반맛 봉지 라면": 200,
+        "매운맛 라면": 200,
+        "순한맛 라면": 200,
+    }
+    total_stock = db.query(
+        "SELECT COALESCE(SUM(qty),0) FROM lot WHERE lot_type='PRODUCTION'"
+    )[0][0]
+    assert inventory["총재고"].sum() == total_stock
+
+
 def test_equipment_defect_code_counts_are_available():
     frame = db.dataframe("""
         SELECT e.equipment_name 설비,dc.defect_code 불량코드,
@@ -63,8 +78,8 @@ def test_material_alert_is_aggregated_by_item():
     """)
     material_count = db.query("SELECT COUNT(*) FROM item WHERE item_type='MATERIAL'")[0][0]
     assert len(frame) == material_count
-    components = frame[frame["item_code"].isin(["RM-NOODLE", "RM-SOUP", "RM-PACK"])]
-    assert len(components) == 3
+    components = frame[frame["item_code"].isin(MATERIAL_ITEM_CODES)]
+    assert len(components) == 7
     assert (components["safety_stock"] == 500).all()
 
 
