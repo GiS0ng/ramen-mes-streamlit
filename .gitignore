@@ -6,6 +6,6 @@ data/*.db
 .streamlit/secrets.toml
 outputs/
 tools/
-tests/
+.pytest_cache/
 .excel_build/
 *.docx

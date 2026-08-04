@@ -12,6 +12,22 @@ Python, Streamlit, SQLite로 구현한 라면 제조 실행 시스템(MES) 데�
 - 박스 1개당 완제품 낱개 LOT 40개 추적
 - 원재료·완제품·박스·고객 기준 양방향 LOT 추적
 
+## 프로젝트 구조
+
+```text
+app.py             Streamlit 초기화와 멀티페이지 라우팅
+pages/             대시보드 등 7개 업무 화면
+services/          등록 검증과 업무 트랜잭션
+repositories/      화면용 데이터 조회
+domain/rules.py    박스 수량·안전재고 등 공통 업무 규칙
+ui/components.py   표·선택·처리 메시지 공통 UI
+db.py              SQLite 연결과 기본 데이터 접근
+seed.py            재현 가능한 데모 데이터 생성
+schema.sql         테이블·뷰·트리거 스키마
+```
+
+화면 이동은 Streamlit의 `st.Page`와 `st.navigation`을 사용합니다. `app.py`는 공통 요소만 실행하고 선택된 `pages/*.py` 화면을 라우팅합니다.
+
 ## 로컬 실행
 
 ```bash
@@ -20,6 +36,15 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+## 테스트
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -v
+```
+
+테스트는 임시 SQLite 데이터베이스를 사용하므로 로컬 `data/mes.db`를 변경하지 않습니다. 업무 규칙, 입고부터 출하까지의 통합 흐름, 8개 Streamlit 페이지 로드를 검사합니다.
 
 ## Streamlit Community Cloud
 
