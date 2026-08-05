@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import random
 from calendar import monthrange
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
 import db
 from domain.rules import (
     BOX_SIZE,
+    DEMO_FINISHED_STOCK_QUANTITY,
     DEMO_REQUEST_COUNT,
     DEMO_REQUEST_QUANTITY,
     DEMO_SHIPMENT_QUANTITY,
@@ -139,13 +140,24 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
             equipment_id = equipment_ids[(request_index - 1) % len(equipment_ids)]
             required_material_codes = PRODUCT_MATERIAL_CODES[product_code]
             request_no = f"REQ-{production_date:%Y%m%d}-{request_index:03d}"
+            running_minutes = int(
+                DEMO_REQUEST_QUANTITY / PACKAGING_CAPACITY_PER_MINUTE
+            )
+            downtime_minutes = rng.randint(20, 55)
+            started_at = datetime.combine(production_date, time(8))
+            planned_completion_at = started_at + timedelta(minutes=running_minutes)
+            completed_at = planned_completion_at + timedelta(minutes=downtime_minutes)
             request_id = connection.execute(
                 """INSERT INTO production_request(
-                       request_no,item_id,equipment_id,requested_qty,request_date,status
-                   ) VALUES(?,?,?,?,?, 'COMPLETED')""",
+                       request_no,item_id,equipment_id,requested_qty,request_date,
+                       started_at,planned_completion_at,completed_at,status
+                   ) VALUES(?,?,?,?,?,?,?,?, 'COMPLETED')""",
                 (
                     request_no, product_id, equipment_id,
                     DEMO_REQUEST_QUANTITY, production_date.isoformat(),
+                    started_at.isoformat(timespec="seconds"),
+                    planned_completion_at.isoformat(timespec="seconds"),
+                    completed_at.isoformat(timespec="seconds"),
                 ),
             ).lastrowid
             product_lot_ids: list[int] = []
@@ -170,10 +182,10 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
                         lot_id,
                         equipment_id,
                         production_date.isoformat(),
-                        f"{production_date} 08:00:00",
-                        f"{production_date} 17:00:00",
-                        f"{production_date} 08:00:00",
-                        f"{production_date} 17:00:00",
+                        started_at.isoformat(sep=" ", timespec="seconds"),
+                        planned_completion_at.isoformat(sep=" ", timespec="seconds"),
+                        started_at.isoformat(sep=" ", timespec="seconds"),
+                        completed_at.isoformat(sep=" ", timespec="seconds"),
                     ),
                 ).lastrowid
                 connection.execute(
@@ -213,8 +225,6 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
                     ],
                 )
 
-            downtime_minutes = rng.randint(20, 55)
-            running_minutes = int(DEMO_REQUEST_QUANTITY / PACKAGING_CAPACITY_PER_MINUTE)
             planned_minutes = running_minutes + downtime_minutes
             first_production = connection.execute(
                 "SELECT production_id FROM production_request_unit WHERE production_request_id=? ORDER BY production_id LIMIT 1",
@@ -236,7 +246,7 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
             schedule_id = connection.execute(
                 "INSERT INTO shipment_schedule(shipment_schedule_no,customer_id,item_id,scheduled_date,scheduled_qty) VALUES(?,?,?,?,?)",
                 (
-                    f"SCH-UNIT-{request_index:03d}",
+                    f"SCH-BOX-{request_index:03d}",
                     customers[request_index % len(customers)],
                     product_id,
                     production_date.isoformat(),
@@ -246,14 +256,37 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
             shipment_id = connection.execute(
                 "INSERT INTO shipment(shipment_no,shipment_schedule_id,customer_id,shipment_date,status,memo) VALUES(?,?,?,?, 'SHIPPED',?)",
                 (
-                    f"SHP-UNIT-{request_index:03d}",
+                    f"SHP-BOX-{request_index:03d}",
                     schedule_id,
                     customers[request_index % len(customers)],
                     production_date.isoformat(),
-                    "낱개 LOT 출하",
+                    f"{DEMO_SHIPMENT_QUANTITY // BOX_SIZE}박스 출하 "
+                    f"({DEMO_SHIPMENT_QUANTITY}개)",
                 ),
             ).lastrowid
             connection.executemany(
                 "INSERT INTO shipment_detail(shipment_id,product_lot_id,shipment_qty) VALUES(?,?,1)",
                 [(shipment_id, lot_id) for lot_id in product_lot_ids[:DEMO_SHIPMENT_QUANTITY]],
             )
+
+            insufficient_box_quantity = (
+                DEMO_FINISHED_STOCK_QUANTITY // BOX_SIZE + 1
+            )
+            for availability, box_quantity in (
+                ("READY", 2),
+                ("SHORT", insufficient_box_quantity),
+            ):
+                connection.execute(
+                    """INSERT INTO shipment_schedule(
+                           shipment_schedule_no,customer_id,item_id,
+                           scheduled_date,scheduled_qty,memo
+                       ) VALUES(?,?,?,?,?,?)""",
+                    (
+                        f"SCH-BOX-{availability}-{request_index:03d}",
+                        customers[request_index % len(customers)],
+                        product_id,
+                        (date.today() + timedelta(days=request_index)).isoformat(),
+                        box_quantity * BOX_SIZE,
+                        f"{box_quantity}박스 미출하 계획",
+                    ),
+                )

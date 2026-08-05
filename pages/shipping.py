@@ -5,57 +5,109 @@ from datetime import date
 import streamlit as st
 
 import db
+from repositories import shipping as shipping_repository
 from services import shipping
-from ui.components import grid, run_action, select_id
+from ui.components import run_action, select_id, show_frame
 
 
 st.title("출하 관리")
-schedule_tab, shipment_tab, detail_tab = st.tabs(["출하 계획", "출하 헤더", "LOT 출하"])
-customers = db.options("SELECT partner_id,partner_code||' · '||partner_name FROM business_partner WHERE partner_type IN ('CUSTOMER','BOTH') AND is_active='Y'")
-products = db.options("SELECT item_id,item_code||' · '||item_name FROM item WHERE item_type='PRODUCT' AND is_active='Y'")
+schedule_tab, pending_tab, completed_tab = st.tabs(
+    ["출하 계획서", "미출하 및 출고", "출고 완료"]
+)
+
+customers = db.options(
+    """SELECT partner_id,partner_code||' · '||partner_name
+       FROM business_partner
+       WHERE partner_type IN ('CUSTOMER','BOTH') AND is_active='Y'
+       ORDER BY partner_code"""
+)
+products = db.options(
+    """SELECT item_id,item_code||' · '||item_name
+       FROM item
+       WHERE item_type='PRODUCT' AND is_active='Y'
+       ORDER BY item_name"""
+)
 
 with schedule_tab:
-    with st.form("schedule"):
+    st.subheader("출하 계획서 등록")
+    with st.form("shipment_schedule"):
         c1, c2, c3, c4 = st.columns(4)
-        schedule_no = c1.text_input("계획번호*", value=f"SCH-{date.today():%Y%m%d}-")
-        customer_id = select_id("고객사*", customers, "sch_cust")
-        item_id = select_id("제품*", products, "sch_item")
-        quantity = c4.number_input("계획 수량*", min_value=0.01)
-        scheduled_date = st.date_input("출하 예정일")
-        if st.form_submit_button("출하계획 등록", type="primary") and customer_id and item_id:
+        with c1:
+            customer_id = select_id("고객사*", customers, "shipment_customer")
+        with c2:
+            item_id = select_id("제품*", products, "shipment_product")
+        box_quantity = c3.number_input(
+            "출하 수량(박스)*", min_value=1, step=1, value=1,
+            help="1박스는 완제품 40개입니다.",
+        )
+        scheduled_date = c4.date_input(
+            "출하 예정일*", value=date.today(), min_value=date.today()
+        )
+        if (
+            st.form_submit_button("출하 계획 등록", type="primary")
+            and customer_id
+            and item_id
+        ):
             run_action(
                 lambda: shipping.create_schedule(
-                    schedule_no, customer_id, item_id, scheduled_date.isoformat(), quantity
+                    customer_id,
+                    item_id,
+                    scheduled_date.isoformat(),
+                    int(box_quantity),
                 ),
-                "출하계획을 등록했습니다.",
+                "출하 계획서를 등록했습니다.",
             )
-    grid("SELECT shipment_schedule_no 계획번호,partner_name 고객,item_name 제품,scheduled_date 예정일,scheduled_qty 계획량,shipped_qty 출하량,status 상태 FROM shipment_schedule ss JOIN business_partner bp ON bp.partner_id=ss.customer_id JOIN item i USING(item_id) ORDER BY scheduled_date DESC")
 
-with shipment_tab:
-    schedules = db.options("SELECT shipment_schedule_id,shipment_schedule_no||' · '||bp.partner_name||' (잔량 '||(scheduled_qty-shipped_qty)||')' FROM shipment_schedule ss JOIN business_partner bp ON bp.partner_id=ss.customer_id WHERE ss.status IN ('PLANNED','PARTIAL_SHIPPED')")
-    with st.form("shipment"):
-        schedule_id = select_id("출하계획*", schedules, "ship_sch")
-        c1, c2 = st.columns(2)
-        shipment_no = c1.text_input("출하번호*", value=f"SHP-{date.today():%Y%m%d}-")
-        shipment_date = c2.date_input("출하일")
-        if st.form_submit_button("출하 헤더 생성", type="primary") and schedule_id:
-            run_action(
-                lambda: shipping.create_shipment(shipment_no, schedule_id, shipment_date.isoformat()),
-                "출하 헤더를 생성했습니다.",
-            )
-    grid("SELECT shipment_no 출하번호,partner_name 고객,shipment_date 출하일,s.status 상태,shipment_schedule_no 계획번호 FROM shipment s JOIN business_partner bp ON bp.partner_id=s.customer_id LEFT JOIN shipment_schedule ss USING(shipment_schedule_id) ORDER BY shipment_date DESC")
+    st.subheader("전체 출하 계획")
+    show_frame(shipping_repository.all_schedules(), height=330)
 
-with detail_tab:
-    shipments = db.options("SELECT shipment_id,shipment_no||' · '||bp.partner_name FROM shipment s JOIN business_partner bp ON bp.partner_id=s.customer_id WHERE s.status='READY'")
-    lots = db.options("SELECT lot_id,lot_no||' · '||i.item_name||' (재고 '||l.qty||')' FROM lot l JOIN item i USING(item_id) WHERE lot_type='PRODUCTION' AND qty>0")
-    with st.form("ship_detail"):
-        c1, c2, c3 = st.columns(3)
-        shipment_id = select_id("출하번호*", shipments, "sd_ship")
-        lot_id = select_id("완제품 LOT*", lots, "sd_lot")
-        quantity = c3.number_input("출하 수량*", min_value=0.01)
-        if st.form_submit_button("LOT 출하 및 재고 차감", type="primary") and shipment_id and lot_id:
-            run_action(
-                lambda: shipping.ship_lot(shipment_id, lot_id, quantity),
-                "출하와 완제품 재고 차감을 완료했습니다.",
-            )
-    grid("SELECT s.shipment_no 출하번호,bp.partner_name 고객,l.lot_no 완제품LOT,sd.shipment_qty 출하량,s.shipment_date 출하일 FROM shipment_detail sd JOIN shipment s USING(shipment_id) JOIN business_partner bp ON bp.partner_id=s.customer_id JOIN lot l ON l.lot_id=sd.product_lot_id ORDER BY s.shipment_date DESC")
+with pending_tab:
+    st.subheader("미출하 계획")
+    st.caption(
+        "제품별 완제품 재고가 미출하 수량 이상일 때만 출고 버튼이 활성화됩니다."
+    )
+    pending = shipping_repository.pending_schedules()
+    if pending.empty:
+        st.info("현재 미출하 상태인 출하 계획이 없습니다.")
+    else:
+        for row in pending.to_dict("records"):
+            with st.container(border=True):
+                c1, c2, c3, c4, c5, c6 = st.columns([2, 2, 2, 1, 1, 1])
+                c1.markdown(f"**{row['계획번호']}**\n\n{row['고객사']}")
+                c2.markdown(f"**제품**\n\n{row['제품']}")
+                c3.markdown(f"**출하 예정일**\n\n{row['출하예정일']}")
+                c4.metric(
+                    "미출하",
+                    f"{int(row['미출하박스']):,}박스",
+                    f"{int(row['미출하수량']):,}개",
+                )
+                c5.metric(
+                    "출고 가능 재고",
+                    f"{int(row['출고가능박스']):,}박스",
+                    f"{int(row['현재재고']):,}개",
+                )
+                sufficient = bool(row["출고가능"])
+                if c6.button(
+                    "출고",
+                    key=f"fulfill_schedule_{row['출하계획ID']}",
+                    type="primary",
+                    disabled=not sufficient,
+                    width="stretch",
+                ):
+                    run_action(
+                        lambda schedule_id=int(row["출하계획ID"]):
+                            shipping.fulfill_schedule(
+                                schedule_id, date.today().isoformat()
+                            ),
+                        "출고 처리와 완제품 재고 차감을 완료했습니다.",
+                    )
+                if not sufficient:
+                    c6.caption("재고 부족")
+
+with completed_tab:
+    st.subheader("출고 완료 내역")
+    completed = shipping_repository.completed_shipments()
+    if completed.empty:
+        st.info("출고 완료 내역이 없습니다.")
+    else:
+        show_frame(completed, height=380)

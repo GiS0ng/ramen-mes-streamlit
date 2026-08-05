@@ -6,7 +6,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import db
-from domain.rules import MATERIAL_ITEM_CODES
+from domain.rules import DEMO_FINISHED_STOCK_QUANTITY, MATERIAL_ITEM_CODES
 from repositories import dashboard as dashboard_repository
 
 
@@ -47,9 +47,9 @@ def test_finished_goods_stock_is_non_negative():
 def test_finished_goods_stock_is_grouped_by_product_name():
     inventory = dashboard_repository.finished_goods_inventory()
     assert inventory.set_index("제품명")["총재고"].to_dict() == {
-        "일반맛 봉지 라면": 200,
-        "매운맛 라면": 200,
-        "순한맛 라면": 200,
+        "일반맛 봉지 라면": DEMO_FINISHED_STOCK_QUANTITY,
+        "매운맛 라면": DEMO_FINISHED_STOCK_QUANTITY,
+        "순한맛 라면": DEMO_FINISHED_STOCK_QUANTITY,
     }
     total_stock = db.query(
         "SELECT COALESCE(SUM(qty),0) FROM lot WHERE lot_type='PRODUCTION'"

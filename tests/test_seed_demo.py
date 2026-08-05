@@ -7,7 +7,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import db
-from domain.rules import PRODUCT_MATERIAL_CODES
+from domain.rules import (
+    BOX_SIZE,
+    DEMO_FINISHED_STOCK_QUANTITY,
+    DEMO_REQUEST_COUNT,
+    DEMO_REQUEST_QUANTITY,
+    PACKAGING_CAPACITY_PER_MINUTE,
+    PRODUCT_MATERIAL_CODES,
+)
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -18,7 +25,9 @@ def seeded_demo_data():
 def test_demo_has_no_palm_oil():
     assert not db.query("SELECT 1 FROM item WHERE item_code='RM-OIL'")
     assert not db.query("SELECT 1 FROM item WHERE item_name='팜유'")
-    assert db.query("SELECT COUNT(*) FROM production_material")[0][0] == 9000
+    assert db.query("SELECT COUNT(*) FROM production_material")[0][0] == (
+        DEMO_REQUEST_QUANTITY * DEMO_REQUEST_COUNT * 3
+    )
     assert [row[0] for row in db.query("SELECT equipment_name FROM equipment ORDER BY equipment_code")] == [
         "라면 포장 1호기", "라면 포장 2호기"
     ]
@@ -72,23 +81,71 @@ def test_product_unit_has_three_unit_material_lots():
         FROM production p JOIN production_material pm USING(production_id)
         GROUP BY p.production_id
     """)
-    assert len(rows) == 3000
+    assert len(rows) == DEMO_REQUEST_QUANTITY * DEMO_REQUEST_COUNT
     assert all((product_qty, component_count, component_qty) == (1, 3, 3)
                for _, product_qty, component_count, component_qty in rows)
     assert db.query("""SELECT COUNT(*) FROM lot
         WHERE lot_type IN ('RECEIPT','PRODUCTION') AND (initial_qty<>1 OR qty NOT IN (0,1))""")[0][0] == 0
 
 
-def test_packaging_operation_uses_one_product_per_minute():
+def test_packaging_operation_uses_one_product_per_thirty_seconds():
     operations = db.query(
         "SELECT planned_minutes,running_minutes,downtime_minutes FROM equipment_operation"
     )
     assert operations
-    assert all(running_minutes == 500 for _, running_minutes, _ in operations)
+    expected_minutes = int(
+        DEMO_REQUEST_QUANTITY / PACKAGING_CAPACITY_PER_MINUTE
+    )
+    assert all(
+        running_minutes == expected_minutes
+        for _, running_minutes, _ in operations
+    )
     assert all(
         planned_minutes == running_minutes + downtime_minutes
         for planned_minutes, running_minutes, downtime_minutes in operations
     )
+
+
+def test_demo_production_requests_have_operation_timestamps():
+    assert db.query(
+        """SELECT COUNT(*) FROM production_request
+           WHERE started_at IS NULL OR planned_completion_at IS NULL
+              OR completed_at IS NULL"""
+    )[0][0] == 0
+
+
+def test_demo_shipping_uses_box_units_and_has_ready_and_short_plans():
+    assert db.query(
+        """SELECT COUNT(*) FROM shipment_schedule
+           WHERE CAST(scheduled_qty AS INTEGER) % ?<>0""",
+        (40,),
+    )[0][0] == 0
+    assert not db.query(
+        """SELECT 1 FROM shipment_schedule WHERE shipment_schedule_no LIKE '%UNIT%'
+           UNION ALL
+           SELECT 1 FROM shipment WHERE shipment_no LIKE '%UNIT%'"""
+    )
+    completed = db.query(
+        """SELECT COUNT(*) FROM shipment_schedule
+           WHERE status='SHIPPED' AND scheduled_qty=800 AND shipped_qty=800"""
+    )[0][0]
+    assert completed == 3
+    availability = db.query(
+        """WITH stock AS (
+               SELECT item_id,SUM(qty) qty FROM lot
+               WHERE lot_type='PRODUCTION' GROUP BY item_id
+           )
+           SELECT SUM(CASE WHEN stock.qty>=ss.scheduled_qty THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN stock.qty<ss.scheduled_qty THEN 1 ELSE 0 END)
+           FROM shipment_schedule ss JOIN stock USING(item_id)
+           WHERE ss.status='PLANNED'"""
+    )[0]
+    assert tuple(availability) == (3, 3)
+    assert db.query(
+        """SELECT COUNT(*) FROM shipment_schedule
+           WHERE status IN ('PLANNED','PARTIAL_SHIPPED')
+             AND scheduled_date<=date('now')"""
+    )[0][0] == 0
 
 
 def test_each_product_uses_its_recipe_materials():
@@ -133,7 +190,7 @@ def test_finished_product_reverse_trace_excludes_box():
 def test_each_box_contains_40_from_one_product_lot():
     expected = db.query("SELECT SUM(CAST(qty / 40 AS INTEGER)) FROM production")[0][0]
     actual = db.query("SELECT COUNT(*) FROM packing_box")[0][0]
-    assert actual == 75
+    assert actual == DEMO_REQUEST_QUANTITY // BOX_SIZE * DEMO_REQUEST_COUNT
     assert db.query("SELECT COUNT(*) FROM packing_box WHERE box_qty<>40")[0][0] == 0
     assert db.query("""SELECT COUNT(*) FROM (
         SELECT packing_box_id FROM packing_box_detail GROUP BY packing_box_id HAVING COUNT(*)<>40
@@ -146,6 +203,20 @@ def test_each_box_contains_40_from_one_product_lot():
         LIMIT 1
     """)
     assert trace and trace[0][3] == 40
+
+
+def test_each_product_has_five_thousand_finished_units_in_stock():
+    stock = db.query(
+        """SELECT i.item_code,SUM(l.qty)
+           FROM item i JOIN lot l ON l.item_id=i.item_id
+           WHERE i.item_type='PRODUCT' AND l.lot_type='PRODUCTION'
+           GROUP BY i.item_id ORDER BY i.item_code"""
+    )
+    assert len(stock) == DEMO_REQUEST_COUNT
+    assert all(
+        quantity == DEMO_FINISHED_STOCK_QUANTITY
+        for _, quantity in stock
+    )
 
 
 if __name__ == "__main__":
