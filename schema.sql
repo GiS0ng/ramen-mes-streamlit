@@ -94,6 +94,13 @@ CREATE TABLE IF NOT EXISTS production_request (
  CHECK(status IN ('PLANNED','IN_PROGRESS','COMPLETED','CANCELED')),
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS production_material_reservation (
+ production_material_reservation_id INTEGER PRIMARY KEY,
+ production_request_id INTEGER NOT NULL REFERENCES production_request(production_request_id) ON DELETE CASCADE,
+ material_lot_id INTEGER NOT NULL UNIQUE REFERENCES lot(lot_id),
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE(production_request_id,material_lot_id)
+);
 CREATE TABLE IF NOT EXISTS production_request_unit (
  production_request_unit_id INTEGER PRIMARY KEY,
  production_request_id INTEGER NOT NULL REFERENCES production_request(production_request_id) ON DELETE CASCADE,
@@ -110,6 +117,13 @@ CREATE TABLE IF NOT EXISTS packing_box_detail (
  packing_box_id INTEGER NOT NULL REFERENCES packing_box(packing_box_id) ON DELETE CASCADE,
  product_lot_id INTEGER NOT NULL UNIQUE REFERENCES lot(lot_id),
  UNIQUE(packing_box_id,product_lot_id)
+);
+CREATE TABLE IF NOT EXISTS shipment_box (
+ shipment_box_id INTEGER PRIMARY KEY,
+ shipment_id INTEGER NOT NULL REFERENCES shipment(shipment_id) ON DELETE CASCADE,
+ packing_box_id INTEGER NOT NULL UNIQUE REFERENCES packing_box(packing_box_id),
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE(shipment_id,packing_box_id)
 );
 CREATE TABLE IF NOT EXISTS defect_code (
  defect_code_id INTEGER PRIMARY KEY, defect_code TEXT NOT NULL UNIQUE, defect_name TEXT NOT NULL,
@@ -148,6 +162,8 @@ CREATE INDEX IF NOT EXISTS idx_shipment_date ON shipment(shipment_date);
 CREATE INDEX IF NOT EXISTS idx_shipment_detail_lot_id ON shipment_detail(product_lot_id);
 CREATE INDEX IF NOT EXISTS idx_product_box_lot_id ON product_box(product_lot_id);
 CREATE INDEX IF NOT EXISTS idx_packing_box_detail_box ON packing_box_detail(packing_box_id);
+CREATE INDEX IF NOT EXISTS idx_shipment_box_shipment ON shipment_box(shipment_id);
+CREATE INDEX IF NOT EXISTS idx_material_reservation_request ON production_material_reservation(production_request_id);
 CREATE INDEX IF NOT EXISTS idx_production_defect_production_id ON production_defect(production_id);
 CREATE INDEX IF NOT EXISTS idx_equipment_operation_equipment_id ON equipment_operation(equipment_id);
 

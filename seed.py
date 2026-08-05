@@ -161,6 +161,7 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
                 ),
             ).lastrowid
             product_lot_ids: list[int] = []
+            packing_box_ids: list[int] = []
 
             for unit_no in range(1, DEMO_REQUEST_QUANTITY + 1):
                 lot_id = connection.execute(
@@ -217,6 +218,7 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
                         production_date.isoformat(),
                     ),
                 ).lastrowid
+                packing_box_ids.append(int(box_id))
                 connection.executemany(
                     "INSERT INTO packing_box_detail(packing_box_id,product_lot_id) VALUES(?,?)",
                     [
@@ -264,6 +266,16 @@ def seed_demo(days: int = 90, seed: int = 20260803) -> None:
                     f"({DEMO_SHIPMENT_QUANTITY}개)",
                 ),
             ).lastrowid
+            connection.executemany(
+                """INSERT INTO shipment_box(shipment_id,packing_box_id)
+                   VALUES(?,?)""",
+                [
+                    (shipment_id, box_id)
+                    for box_id in packing_box_ids[
+                        :DEMO_SHIPMENT_QUANTITY // BOX_SIZE
+                    ]
+                ],
+            )
             connection.executemany(
                 "INSERT INTO shipment_detail(shipment_id,product_lot_id,shipment_qty) VALUES(?,?,1)",
                 [(shipment_id, lot_id) for lot_id in product_lot_ids[:DEMO_SHIPMENT_QUANTITY]],

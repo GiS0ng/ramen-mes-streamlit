@@ -64,10 +64,12 @@ def start_plan(plan_id: int, started_at: datetime | None = None) -> int:
         if plan[3] != "AVAILABLE":
             raise ValueError("선택한 설비가 현재 가동 가능한 상태가 아닙니다.")
 
-        _available_material_lots(connection, plan[0], int(plan[2]))
+        _ensure_reserved_material_lots(
+            connection, plan_id, int(plan[0]), int(plan[2])
+        )
         started_at = started_at or _now()
-        running_minutes = ceil(int(plan[2]) / float(plan[4]))
-        planned_completion_at = started_at + timedelta(minutes=running_minutes)
+        running_seconds = ceil(int(plan[2]) / float(plan[4]) * 60)
+        planned_completion_at = started_at + timedelta(seconds=running_seconds)
         connection.execute(
             """UPDATE production_request
                SET status='IN_PROGRESS',started_at=?,planned_completion_at=?
@@ -88,7 +90,8 @@ def start_plan(plan_id: int, started_at: datetime | None = None) -> int:
 def auto_complete_due_plans(now: datetime | None = None) -> list[int]:
     """예상 가동시간이 지난 생산계획을 실적과 함께 자동 완료한다."""
     now = now or _now()
-    advance_running_plans(now)
+    failures: dict[int, str] = {}
+    advance_running_plans(now, failures=failures)
     due_plans = db.query(
         """SELECT production_request_id,planned_completion_at
            FROM production_request
@@ -100,19 +103,42 @@ def auto_complete_due_plans(now: datetime | None = None) -> list[int]:
     )
     completed: list[int] = []
     for plan_id, planned_completion_at in due_plans:
+        plan_id = int(plan_id)
+        if plan_id in failures:
+            continue
         effective_completion = datetime.fromisoformat(planned_completion_at)
-        complete_plan(
-            int(plan_id),
-            effective_completion.date().isoformat(),
-            0,
-            "가동시간 기준 자동 완료",
-            completed_at=effective_completion,
+        try:
+            complete_plan(
+                plan_id,
+                effective_completion.date().isoformat(),
+                0,
+                "가동시간 기준 자동 완료",
+                completed_at=effective_completion,
+            )
+            completed.append(plan_id)
+        except Exception as exc:
+            status = db.query(
+                """SELECT status FROM production_request
+                   WHERE production_request_id=?""",
+                (plan_id,),
+            )
+            if status and status[0][0] == "COMPLETED":
+                continue
+            failures[plan_id] = str(exc)
+    if failures:
+        details = "; ".join(
+            f"계획 {plan_id}: {message}"
+            for plan_id, message in sorted(failures.items())
         )
-        completed.append(int(plan_id))
+        raise RuntimeError(f"생산계획 자동 처리 오류 - {details}")
     return completed
 
 
-def advance_running_plans(now: datetime | None = None) -> dict[int, int]:
+def advance_running_plans(
+    now: datetime | None = None,
+    *,
+    failures: dict[int, str] | None = None,
+) -> dict[int, int]:
     """경과 가동시간만큼 완제품을 낱개 생성하고 계획 잔량을 감소시킨다."""
     now = now or _now()
     running_plans = db.query(
@@ -125,6 +151,7 @@ def advance_running_plans(now: datetime | None = None) -> dict[int, int]:
            ORDER BY pr.production_request_id"""
     )
     created_by_plan: dict[int, int] = {}
+    plan_failures = failures if failures is not None else {}
     for plan_id, started_at, planned_completion_at, quantity, capacity in running_plans:
         start = datetime.fromisoformat(started_at)
         elapsed_minutes = max(0.0, (now - start).total_seconds() / 60)
@@ -138,11 +165,22 @@ def advance_running_plans(now: datetime | None = None) -> dict[int, int]:
             datetime.fromisoformat(planned_completion_at)
             if planned_completion_at else now,
         )
-        created = _advance_plan(
-            int(plan_id), target_quantity, effective_time.date().isoformat()
-        )
+        plan_id = int(plan_id)
+        try:
+            created = _advance_plan(
+                plan_id, target_quantity, effective_time.date().isoformat()
+            )
+        except Exception as exc:
+            plan_failures[plan_id] = str(exc)
+            continue
         if created:
-            created_by_plan[int(plan_id)] = created
+            created_by_plan[plan_id] = created
+    if failures is None and plan_failures:
+        details = "; ".join(
+            f"계획 {plan_id}: {message}"
+            for plan_id, message in sorted(plan_failures.items())
+        )
+        raise RuntimeError(f"생산계획 진행 오류 - {details}")
     return created_by_plan
 
 
@@ -167,8 +205,8 @@ def _advance_plan(plan_id: int, target_quantity: int, production_date: str) -> i
         if create_quantity <= 0:
             return 0
 
-        material_lots = _available_material_lots(
-            connection, int(product_id), create_quantity
+        material_lots = _ensure_reserved_material_lots(
+            connection, plan_id, int(product_id), create_quantity
         )
         _create_production_units(
             connection,
@@ -219,8 +257,8 @@ def complete_plan(
         ).fetchone()[0])
         remaining_quantity = int(quantity) - produced_quantity
         if remaining_quantity > 0:
-            material_lots = _available_material_lots(
-                connection, int(product_id), remaining_quantity
+            material_lots = _ensure_reserved_material_lots(
+                connection, plan_id, int(product_id), remaining_quantity
             )
             _create_production_units(
                 connection,
@@ -320,7 +358,10 @@ def _available_material_lots(connection, product_id: int, quantity: int) -> dict
     for code in PRODUCT_MATERIAL_CODES[product[0]]:
         rows = connection.execute(
             """SELECT l.lot_id FROM lot l JOIN item i ON i.item_id=l.item_id
+               LEFT JOIN production_material_reservation pmr
+                 ON pmr.material_lot_id=l.lot_id
                WHERE i.item_code=? AND l.lot_type='RECEIPT' AND l.qty=1
+                 AND pmr.production_material_reservation_id IS NULL
                ORDER BY l.expire_date,l.received_date,l.lot_id LIMIT ?""",
             (code, quantity),
         ).fetchall()
@@ -328,6 +369,67 @@ def _available_material_lots(connection, product_id: int, quantity: int) -> dict
             raise ValueError(f"{code} 낱개 LOT 재고가 {quantity}개보다 부족합니다.")
         material_lots[code] = [int(row[0]) for row in rows]
     return material_lots
+
+
+def _ensure_reserved_material_lots(
+    connection,
+    request_id: int,
+    product_id: int,
+    quantity: int,
+) -> dict[str, list[int]]:
+    product = connection.execute(
+        "SELECT item_code FROM item WHERE item_id=? AND item_type='PRODUCT'",
+        (product_id,),
+    ).fetchone()
+    if product is None or product[0] not in PRODUCT_MATERIAL_CODES:
+        raise ValueError("등록된 제품별 원재료 조합이 없습니다.")
+
+    reserved_material_lots: dict[str, list[int]] = {}
+    for code in PRODUCT_MATERIAL_CODES[product[0]]:
+        reserved = [
+            int(row[0])
+            for row in connection.execute(
+                """SELECT l.lot_id
+                   FROM production_material_reservation pmr
+                   JOIN lot l ON l.lot_id=pmr.material_lot_id
+                   JOIN item i ON i.item_id=l.item_id
+                   WHERE pmr.production_request_id=? AND i.item_code=?
+                     AND l.lot_type='RECEIPT' AND l.qty=1
+                   ORDER BY l.expire_date,l.received_date,l.lot_id
+                   LIMIT ?""",
+                (request_id, code, quantity),
+            ).fetchall()
+        ]
+        missing_quantity = quantity - len(reserved)
+        if missing_quantity > 0:
+            available = [
+                int(row[0])
+                for row in connection.execute(
+                    """SELECT l.lot_id
+                       FROM lot l
+                       JOIN item i ON i.item_id=l.item_id
+                       LEFT JOIN production_material_reservation pmr
+                         ON pmr.material_lot_id=l.lot_id
+                       WHERE i.item_code=? AND l.lot_type='RECEIPT' AND l.qty=1
+                         AND pmr.production_material_reservation_id IS NULL
+                       ORDER BY l.expire_date,l.received_date,l.lot_id
+                       LIMIT ?""",
+                    (code, missing_quantity),
+                ).fetchall()
+            ]
+            if len(available) < missing_quantity:
+                raise ValueError(
+                    f"{code} 예약 가능한 낱개 LOT 재고가 {quantity}개보다 부족합니다."
+                )
+            connection.executemany(
+                """INSERT INTO production_material_reservation(
+                       production_request_id,material_lot_id
+                   ) VALUES(?,?)""",
+                [(request_id, lot_id) for lot_id in available],
+            )
+            reserved.extend(available)
+        reserved_material_lots[code] = reserved
+    return reserved_material_lots
 
 
 def _create_production_units(
@@ -370,6 +472,16 @@ def _create_production_units(
                 (production_id, lots[index]),
             )
         production_ids.append(int(production_id))
+    used_lot_ids = [
+        lot_id
+        for lots in material_lots.values()
+        for lot_id in lots[:quantity]
+    ]
+    connection.executemany(
+        """DELETE FROM production_material_reservation
+           WHERE production_request_id=? AND material_lot_id=?""",
+        [(request_id, lot_id) for lot_id in used_lot_ids],
+    )
     return production_ids
 
 

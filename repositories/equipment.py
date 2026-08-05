@@ -19,7 +19,6 @@ def plan_options(status: str, available_only: bool = False) -> dict[str, int]:
         (status,),
     )
 
-
 def plans(status: str) -> pd.DataFrame:
     return db.dataframe(
         """WITH plan_progress AS (

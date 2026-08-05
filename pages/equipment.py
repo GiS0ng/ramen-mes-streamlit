@@ -13,13 +13,13 @@ operation_tab, result_tab = st.tabs(["생산계획 가동", "성과 조회"])
 @st.fragment(run_every="10s")
 def operation_panel() -> None:
     try:
-        completed = production.auto_complete_due_plans()
-        if completed:
-            st.success(
-                f"가동시간이 경과한 생산계획 {len(completed)}건을 자동 완료했습니다."
-            )
-    except Exception as exc:
-        st.error(f"생산계획 자동 완료 중 오류가 발생했습니다: {exc}")
+        production.auto_complete_due_plans()
+    except RuntimeError as exc:
+        st.warning(str(exc))
+    st.caption(
+        "페이지 접속 시 경과시간만큼 생산량을 반영합니다. 이 화면을 열어 둔 동안에는 "
+        "10초마다 진행 수량과 완제품 재고를 갱신합니다."
+    )
 
     st.subheader("가동 대기 생산계획")
     planned = equipment_repository.plans("PLANNED")

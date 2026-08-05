@@ -3,6 +3,7 @@ from __future__ import annotations
 import streamlit as st
 
 import db
+from services import production
 from ui.components import run_action
 
 
@@ -12,6 +13,12 @@ database_was_missing = not db.DB_PATH.exists()
 db.initialize()
 if database_was_missing:
     db.seed_demo()
+
+production_catch_up_error: str | None = None
+try:
+    production.auto_complete_due_plans()
+except RuntimeError as exc:
+    production_catch_up_error = str(exc)
 
 st.markdown(
     """
@@ -43,7 +50,9 @@ navigation = st.navigation(pages, position="sidebar")
 
 with st.sidebar:
     st.divider()
-    st.caption("SQLite · LOT 기반 재고 · 트리거 자동 차감")
+    st.caption("SQLite · LOT 기반 재고 · 접속 시 경과 생산량 자동 반영")
+    if production_catch_up_error:
+        st.warning(production_catch_up_error)
     st.info("공개 데모 환경입니다. 서버 재시작 또는 재배포 시 입력 데이터가 초기화될 수 있습니다.")
     if st.button("더미 데이터 생성", type="primary", width="stretch"):
         run_action(db.seed_demo, "현재 월을 포함한 최근 3개월의 더미 데이터를 생성했습니다.")
