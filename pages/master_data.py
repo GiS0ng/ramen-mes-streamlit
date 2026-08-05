@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from domain.rules import PACKAGING_CAPACITY_PER_MINUTE
 from services import master_data
 from ui.components import grid, run_action
 
@@ -44,12 +45,23 @@ with partner_tab:
 with equipment_tab:
     with st.form("equipment"):
         c1, c2, c3, c4, c5 = st.columns(5)
-        code = c1.text_input("설비 코드*")
+        code_number = c1.number_input(
+            "설비 코드 번호*",
+            min_value=1,
+            step=1,
+            value=3,
+            help="숫자만 입력하면 EQ-PACK- 접두사가 자동으로 붙습니다.",
+        )
+        code = f"EQ-PACK-{int(code_number):02d}"
+        c1.caption(f"생성 코드: {code}")
         name = c2.text_input("설비명*")
         equipment_type = c3.text_input("설비 유형")
         location = c4.text_input("설치 위치")
         capacity_per_minute = c5.number_input(
-            "분당 생산능력*", min_value=0.01, value=1.0, step=0.1
+            "분당 생산능력*",
+            min_value=0.01,
+            value=float(PACKAGING_CAPACITY_PER_MINUTE),
+            step=0.1,
         )
         if st.form_submit_button("설비 등록", type="primary"):
             run_action(

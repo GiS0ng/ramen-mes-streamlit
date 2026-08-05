@@ -88,7 +88,9 @@ CREATE TABLE IF NOT EXISTS production_request (
  production_request_id INTEGER PRIMARY KEY, request_no TEXT NOT NULL UNIQUE,
  item_id INTEGER NOT NULL REFERENCES item(item_id), equipment_id INTEGER REFERENCES equipment(equipment_id),
  requested_qty INTEGER NOT NULL CHECK(requested_qty>0),
- request_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'COMPLETED'
+ request_date TEXT NOT NULL,
+ started_at TEXT, planned_completion_at TEXT, completed_at TEXT,
+ status TEXT NOT NULL DEFAULT 'COMPLETED'
  CHECK(status IN ('PLANNED','IN_PROGRESS','COMPLETED','CANCELED')),
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

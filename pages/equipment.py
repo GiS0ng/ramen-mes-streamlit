@@ -2,43 +2,83 @@ from __future__ import annotations
 
 import streamlit as st
 
-import db
-from services import equipment as equipment_service
-from ui.components import grid, run_action, select_id
+from repositories import equipment as equipment_repository
+from services import production
+from ui.components import run_action, select_id, show_frame
 
 
 st.title("설비 성과")
-register_tab, result_tab = st.tabs(["가동 실적 등록", "성과 조회"])
-equipment = db.options("SELECT equipment_id,equipment_code||' · '||equipment_name FROM equipment WHERE is_active='Y'")
-productions = db.options("SELECT production_id,production_no FROM production ORDER BY production_date DESC")
+operation_tab, result_tab = st.tabs(["생산계획 가동", "성과 조회"])
 
-with register_tab:
-    with st.form("operation"):
-        c1, c2, c3 = st.columns(3)
-        equipment_id = select_id("설비*", equipment, "op_eq")
-        production_id = select_id("생산번호", productions, "op_prod")
-        operation_date = c3.date_input("가동일")
-        c4, c5, c6 = st.columns(3)
-        planned = c4.number_input("계획 시간(분)", min_value=0, step=10)
-        running = c5.number_input("가동 시간(분)", min_value=0, step=10)
-        downtime = c6.number_input("비가동 시간(분)", min_value=0, step=10)
-        reason = st.text_input("비가동 사유")
-        if st.form_submit_button("가동 실적 등록", type="primary") and equipment_id:
-            run_action(
-                lambda: equipment_service.register_operation(
-                    equipment_id,
-                    production_id,
-                    operation_date.isoformat(),
-                    planned,
-                    running,
-                    downtime,
-                    reason,
-                ),
-                "설비 가동 실적을 등록했습니다.",
+@st.fragment(run_every="10s")
+def operation_panel() -> None:
+    try:
+        completed = production.auto_complete_due_plans()
+        if completed:
+            st.success(
+                f"가동시간이 경과한 생산계획 {len(completed)}건을 자동 완료했습니다."
             )
+    except Exception as exc:
+        st.error(f"생산계획 자동 완료 중 오류가 발생했습니다: {exc}")
+
+    st.subheader("가동 대기 생산계획")
+    planned = equipment_repository.plans("PLANNED")
+    if planned.empty:
+        st.info("가동 대기 중인 생산계획이 없습니다.")
+    else:
+        show_frame(planned, height=250)
+
+    start_options = equipment_repository.plan_options(
+        "PLANNED", available_only=True
+    )
+    if start_options:
+        start_plan_id = select_id(
+            "가동을 시작할 생산계획서*", start_options, "equipment_start_plan"
+        )
+        if st.button("설비 가동 시작", type="primary") and start_plan_id:
+            run_action(
+                lambda: production.start_plan(start_plan_id),
+                "생산계획 가동을 시작했습니다.",
+            )
+    elif not planned.empty:
+        st.warning("가동 가능한 설비에 배정된 생산계획이 없습니다.")
+
+    st.divider()
+    st.subheader("가동 중 생산계획")
+    running = equipment_repository.plans("IN_PROGRESS")
+    if running.empty:
+        st.info("현재 가동 중인 생산계획이 없습니다.")
+    else:
+        st.markdown("#### 가동 완료 계획 일시")
+        show_frame(
+            running[[
+                "계획번호", "설비", "품목", "계획수량",
+                "생산완료수량", "잔여계획수량", "가동완료계획일시",
+            ]],
+            height=min(220, 38 + len(running) * 35),
+        )
+        st.markdown("#### 가동 계획 상세")
+        show_frame(running, height=220)
+        st.caption(
+            "설비 생산능력과 경과시간에 맞춰 계획 잔량이 감소하고 완제품 재고가 "
+            "증가합니다. 완제품 40개가 모이면 박스가 자동 생성됩니다."
+        )
+
+    st.divider()
+    st.subheader("설비 가동 상태")
+    show_frame(equipment_repository.equipment_status(), height=240)
+
+
+with operation_tab:
+    operation_panel()
 
 with result_tab:
-    grid("""SELECT e.equipment_code 설비코드,e.equipment_name 설비명,COALESCE(SUM(eo.planned_minutes),0) 계획시간,
-    COALESCE(SUM(eo.running_minutes),0) 가동시간,COALESCE(SUM(eo.downtime_minutes),0) 비가동시간,
-    ROUND(SUM(eo.running_minutes)*100.0/NULLIF(SUM(eo.planned_minutes),0),2) 가동률
-    FROM equipment e LEFT JOIN equipment_operation eo USING(equipment_id) GROUP BY e.equipment_id ORDER BY e.equipment_code""")
+    st.subheader("설비별 누적 성과")
+    show_frame(equipment_repository.performance(), height=260)
+
+    st.subheader("생산계획 기준 가동 실적")
+    history = equipment_repository.operation_history()
+    if history.empty:
+        st.info("등록된 설비 가동 실적이 없습니다.")
+    else:
+        show_frame(history, height=340)

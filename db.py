@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timedelta
+from math import ceil
 from pathlib import Path
 from typing import Sequence
 
@@ -59,6 +61,35 @@ def _migrate_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE production_request ADD COLUMN equipment_id INTEGER REFERENCES equipment(equipment_id)"
         )
+    for column in ("started_at", "planned_completion_at", "completed_at"):
+        if column not in production_request_columns:
+            connection.execute(
+                f"ALTER TABLE production_request ADD COLUMN {column} TEXT"
+            )
+
+    legacy_running_plans = connection.execute(
+        """SELECT pr.production_request_id,pr.started_at,pr.created_at,
+                  pr.requested_qty,e.capacity_per_minute
+           FROM production_request pr
+           JOIN equipment e ON e.equipment_id=pr.equipment_id
+           WHERE pr.status='IN_PROGRESS'
+             AND pr.planned_completion_at IS NULL"""
+    ).fetchall()
+    for plan_id, started_at, created_at, quantity, capacity in legacy_running_plans:
+        effective_start = datetime.fromisoformat(started_at or created_at)
+        planned_completion = effective_start + timedelta(
+            minutes=ceil(int(quantity) / float(capacity))
+        )
+        connection.execute(
+            """UPDATE production_request
+               SET started_at=?,planned_completion_at=?
+               WHERE production_request_id=?""",
+            (
+                effective_start.isoformat(timespec="seconds"),
+                planned_completion.isoformat(timespec="seconds"),
+                plan_id,
+            ),
+        )
 
     equipment_columns = {
         row[1] for row in connection.execute("PRAGMA table_info(equipment)")
@@ -68,6 +99,12 @@ def _migrate_schema(connection: sqlite3.Connection) -> None:
             """ALTER TABLE equipment ADD COLUMN capacity_per_minute REAL
                NOT NULL DEFAULT 1 CHECK(capacity_per_minute>0)"""
         )
+    connection.execute(
+        """UPDATE equipment SET capacity_per_minute=?
+           WHERE equipment_code IN ('EQ-PACK-01','EQ-PACK-02')
+             AND capacity_per_minute=1""",
+        (PACKAGING_CAPACITY_PER_MINUTE,),
+    )
 
 
 def execute(sql: str, params: Sequence = ()) -> int:

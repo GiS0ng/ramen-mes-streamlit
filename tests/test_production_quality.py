@@ -1,5 +1,5 @@
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -8,6 +8,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import db
+from domain.rules import PRODUCT_MATERIAL_CODES
+from repositories import equipment as equipment_repository
 from repositories import production_quality as quality_repository
 from services import production
 
@@ -20,6 +22,7 @@ def seeded_production_data():
 def test_production_request_schema_supports_equipment():
     columns = {row[1] for row in db.query("PRAGMA table_info(production_request)")}
     assert "equipment_id" in columns
+    assert {"started_at", "planned_completion_at", "completed_at"} <= columns
     equipment_columns = {row[1] for row in db.query("PRAGMA table_info(equipment)")}
     assert "capacity_per_minute" in equipment_columns
 
@@ -49,8 +52,166 @@ def test_create_production_plan_with_equipment_product_and_quantity():
     ]
     assert not plans.empty
     created_plan = plans[plans["생산수량"] == 250].iloc[0]
-    assert created_plan["분당생산능력"] == 1
-    assert created_plan["예상포장시간_분"] == 250
+    assert created_plan["분당생산능력"] == 2
+    assert created_plan["예상포장시간_분"] == 125
+
+
+def test_saved_plan_controls_equipment_and_creates_results():
+    equipment_id = db.query(
+        "SELECT equipment_id FROM equipment ORDER BY equipment_id LIMIT 1"
+    )[0][0]
+    product_id, product_code = db.query(
+        """SELECT item_id,item_code FROM item
+           WHERE item_code='FG-MILD'"""
+    )[0]
+    quantity = 40
+
+    with db.transaction() as connection:
+        for material_code in PRODUCT_MATERIAL_CODES[product_code]:
+            material_id = connection.execute(
+                "SELECT item_id FROM item WHERE item_code=?", (material_code,)
+            ).fetchone()[0]
+            for serial in range(1, quantity + 1):
+                connection.execute(
+                    """INSERT INTO lot(
+                           lot_no,item_id,lot_type,initial_qty,qty,received_date
+                       ) VALUES(?,?, 'RECEIPT',1,1,?)""",
+                    (
+                        f"TEST-{material_code}-{serial:03d}", material_id,
+                        date.today().isoformat(),
+                    ),
+                )
+
+    plan_id = production.create_plan(equipment_id, product_id, quantity)
+    production.start_plan(plan_id)
+    assert db.query(
+        "SELECT status FROM production_request WHERE production_request_id=?",
+        (plan_id,),
+    )[0][0] == "IN_PROGRESS"
+    assert db.query(
+        "SELECT status FROM equipment WHERE equipment_id=?", (equipment_id,)
+    )[0][0] == "RUNNING"
+    running_plans = equipment_repository.plans("IN_PROGRESS")
+    running_plan = running_plans[
+        running_plans["계획수량"] == quantity
+    ].iloc[-1]
+    assert running_plan["가동시작일시"]
+    assert running_plan["가동완료계획일시"]
+    status_frame = equipment_repository.equipment_status()
+    assert "가동 중" in status_frame["설비상태"].tolist()
+
+    completed_quantity = production.complete_plan(
+        plan_id, date.today().isoformat(), 5, "테스트 정지"
+    )
+    assert completed_quantity == quantity
+    assert db.query(
+        "SELECT status FROM production_request WHERE production_request_id=?",
+        (plan_id,),
+    )[0][0] == "COMPLETED"
+    assert db.query(
+        "SELECT status FROM equipment WHERE equipment_id=?", (equipment_id,)
+    )[0][0] == "AVAILABLE"
+    assert db.query(
+        """SELECT COUNT(*) FROM production_request_unit
+           WHERE production_request_id=?""",
+        (plan_id,),
+    )[0][0] == quantity
+    assert db.query(
+        """SELECT COUNT(*) FROM production_material pm
+           JOIN production_request_unit pru USING(production_id)
+           WHERE pru.production_request_id=?""",
+        (plan_id,),
+    )[0][0] == quantity * 3
+    assert db.query(
+        "SELECT COUNT(*) FROM packing_box WHERE box_no LIKE ?",
+        (f"BOX-PLAN-%",),
+    )[0][0] >= 1
+    operation = db.query(
+        """SELECT running_minutes,downtime_minutes,planned_minutes
+           FROM equipment_operation
+           ORDER BY equipment_operation_id DESC LIMIT 1"""
+    )[0]
+    assert tuple(operation) == (20, 5, 25)
+    assert not equipment_repository.operation_history().empty
+
+
+def test_running_plan_is_completed_automatically_after_expected_minutes():
+    equipment_id = db.query(
+        "SELECT equipment_id FROM equipment WHERE status='AVAILABLE' ORDER BY equipment_id LIMIT 1"
+    )[0][0]
+    product_id, product_code = db.query(
+        "SELECT item_id,item_code FROM item WHERE item_code='FG-RAMEN'"
+    )[0]
+    quantity = 2
+
+    with db.transaction() as connection:
+        for material_code in PRODUCT_MATERIAL_CODES[product_code]:
+            material_id = connection.execute(
+                "SELECT item_id FROM item WHERE item_code=?", (material_code,)
+            ).fetchone()[0]
+            for serial in range(quantity):
+                connection.execute(
+                    """INSERT INTO lot(
+                           lot_no,item_id,lot_type,initial_qty,qty,received_date
+                       ) VALUES(?,?, 'RECEIPT',1,1,?)""",
+                    (
+                        f"AUTO-{material_code}-{serial}-{datetime.now().timestamp()}",
+                        material_id,
+                        date.today().isoformat(),
+                    ),
+                )
+
+    plan_id = production.create_plan(equipment_id, product_id, quantity)
+    started_at = datetime(2026, 8, 5, 9, 0, 0)
+    production.start_plan(plan_id, started_at=started_at)
+    plan = db.query(
+        """SELECT status,started_at,planned_completion_at
+           FROM production_request WHERE production_request_id=?""",
+        (plan_id,),
+    )[0]
+    assert tuple(plan) == (
+        "IN_PROGRESS",
+        started_at.isoformat(timespec="seconds"),
+        (started_at + timedelta(minutes=1)).isoformat(timespec="seconds"),
+    )
+
+    assert production.auto_complete_due_plans(
+        started_at + timedelta(seconds=30)
+    ) == []
+    assert db.query(
+        """SELECT COUNT(*) FROM production_request_unit
+           WHERE production_request_id=?""",
+        (plan_id,),
+    )[0][0] == 1
+    progress = equipment_repository.plans("IN_PROGRESS")
+    progress = progress[progress["계획번호"].str.contains(str(plan_id).zfill(4))].iloc[0]
+    assert progress["생산완료수량"] == 1
+    assert progress["잔여계획수량"] == 1
+    assert db.query(
+        """SELECT SUM(l.qty)
+           FROM production_request_unit pru
+           JOIN production p USING(production_id)
+           JOIN lot l ON l.lot_id=p.output_lot_id
+           WHERE pru.production_request_id=?""",
+        (plan_id,),
+    )[0][0] == 1
+    assert production.auto_complete_due_plans(
+        started_at + timedelta(minutes=1)
+    ) == [plan_id]
+    status, completed_at = db.query(
+        """SELECT status,completed_at FROM production_request
+           WHERE production_request_id=?""",
+        (plan_id,),
+    )[0]
+    assert status == "COMPLETED"
+    assert completed_at == (started_at + timedelta(minutes=1)).isoformat(
+        timespec="seconds"
+    )
+    assert db.query(
+        """SELECT COUNT(*) FROM production_request_unit
+           WHERE production_request_id=?""",
+        (plan_id,),
+    )[0][0] == quantity
 
 
 def test_defect_lot_lookup_filters_by_equipment_and_production_date():

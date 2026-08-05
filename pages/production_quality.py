@@ -8,13 +8,11 @@ import streamlit as st
 import db
 from repositories import production_quality as quality_repository
 from services import production
-from ui.components import grid, run_action, select_id, show_frame
+from ui.components import run_action, select_id, show_frame
 
 
-st.title("생산 등록·품질 관리")
-plan_tab, production_tab, material_tab, defect_tab = st.tabs(
-    ["생산 계획서", "생산 등록", "원재료 투입", "불량 등록"]
-)
+st.title("생산 계획·품질 관리")
+plan_tab, defect_tab = st.tabs(["생산 계획서", "불량 등록"])
 
 products = db.options(
     """SELECT item_id,item_code||' · '||item_name
@@ -27,12 +25,6 @@ equipment = db.options(
        FROM equipment WHERE is_active='Y'
        ORDER BY equipment_code"""
 )
-productions = db.options(
-    """SELECT production_id,production_no||' · '||i.item_name
-       FROM production p JOIN item i USING(item_id)
-       WHERE p.status<>'CANCELED' ORDER BY production_date DESC"""
-)
-
 with plan_tab:
     st.subheader("생산 계획서 작성")
     with st.form("production_plan"):
@@ -72,63 +64,6 @@ with plan_tab:
         st.info("등록된 생산 계획이 없습니다.")
     else:
         show_frame(plans, height=300)
-
-with production_tab:
-    with st.form("production"):
-        c1, c2, c3, c4 = st.columns(4)
-        request_no = c1.text_input("생산요청번호*", value=f"REQ-{date.today():%Y%m%d}-")
-        with c2:
-            item_id = select_id("제품*", products, "prod_item")
-        quantity = c3.number_input("요청수량*", min_value=1, step=1, value=1000)
-        with c4:
-            equipment_id = select_id("포장 설비", equipment, "prod_eq")
-        production_date = st.date_input("생산일")
-        st.caption(
-            "완제품 1개당 낱개 LOT 1개와 면·제품별 스프·제품별 포장지 LOT가 "
-            "각각 1개씩 투입됩니다. 40개마다 박스 1개가 생성됩니다."
-        )
-        if st.form_submit_button("생산 및 완제품 LOT 등록", type="primary") and item_id:
-            run_action(
-                lambda: production.create_request(
-                    request_no, item_id, equipment_id,
-                    production_date.isoformat(), int(quantity),
-                ),
-                f"생산요청 {int(quantity):,}개와 낱개 LOT를 등록했습니다.",
-            )
-    grid(
-        """SELECT production_no 생산번호,item_name 제품,lot_no 완제품LOT,
-                  production_date 생산일,input_qty 투입량,p.qty 생산량,p.status 상태
-           FROM production p JOIN item i ON i.item_id=p.item_id
-           JOIN lot l ON l.lot_id=p.output_lot_id
-           ORDER BY production_date DESC"""
-    )
-
-with material_tab:
-    raw_lots = db.options(
-        """SELECT lot_id,lot_no||' · '||i.item_name||' (재고 '||l.qty||')'
-           FROM lot l JOIN item i USING(item_id)
-           WHERE lot_type='RECEIPT' AND qty>0
-           ORDER BY expire_date,received_date"""
-    )
-    with st.form("material"):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            production_id = select_id("생산번호*", productions, "mat_prod")
-        with c2:
-            lot_id = select_id("원재료 LOT*", raw_lots, "mat_lot")
-        quantity = c3.number_input("사용량*", min_value=0.01)
-        if st.form_submit_button("원재료 투입", type="primary") and production_id and lot_id:
-            run_action(
-                lambda: production.register_material(production_id, lot_id, quantity),
-                "원재료 투입 및 재고 차감을 완료했습니다.",
-            )
-    grid(
-        """SELECT p.production_no 생산번호,i.item_name 원재료,l.lot_no LOT,
-                  pm.qty 사용량,pm.created_at 등록시각
-           FROM production_material pm JOIN production p USING(production_id)
-           JOIN lot l ON l.lot_id=pm.material_lot_id JOIN item i USING(item_id)
-           ORDER BY pm.created_at DESC"""
-    )
 
 with defect_tab:
     st.subheader("생산실적 조회 기반 불량 등록")

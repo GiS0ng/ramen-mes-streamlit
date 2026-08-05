@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import db
 
 
@@ -24,6 +26,8 @@ def create_equipment(
     location: str,
     capacity_per_minute: float,
 ) -> int:
+    if not re.fullmatch(r"EQ-PACK-\d+", code):
+        raise ValueError("설비 코드는 EQ-PACK- 뒤에 숫자만 입력해야 합니다.")
     if capacity_per_minute <= 0:
         raise ValueError("분당 생산능력은 0보다 커야 합니다.")
     return db.execute(

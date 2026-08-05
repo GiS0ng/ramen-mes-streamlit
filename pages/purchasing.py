@@ -103,11 +103,15 @@ with receipt_tab:
                 "미입고 잔량 전체가 입고되며 원재료 1개마다 LOT 1개가 자동 생성됩니다."
             )
             confirmed = st.checkbox("현장에서 품목과 수량을 확인했습니다.")
-            if st.form_submit_button("입고 처리", type="primary", disabled=not confirmed) and detail_id:
-                run_action(
-                    lambda: purchasing.receive_purchase_order(detail_id, receipt_date),
-                    "현장 확인 발주서의 입고 처리를 완료했습니다.",
-                )
+            submitted = st.form_submit_button("입고 처리", type="primary")
+            if submitted:
+                if not confirmed:
+                    st.error("현장에서 품목과 수량을 확인한 후 체크해 주세요.")
+                elif detail_id:
+                    run_action(
+                        lambda: purchasing.receive_purchase_order(detail_id, receipt_date),
+                        "현장 확인 발주서의 입고 처리를 완료했습니다.",
+                    )
 
     st.subheader("입고 완료 발주서")
     grid(
