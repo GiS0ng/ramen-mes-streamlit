@@ -130,6 +130,9 @@ def test_demo_shipping_uses_box_units_and_has_ready_and_short_plans():
            WHERE status='SHIPPED' AND scheduled_qty=800 AND shipped_qty=800"""
     )[0][0]
     assert completed == 3
+    assert db.query("SELECT COUNT(*) FROM shipment_box")[0][0] == (
+        20 * DEMO_REQUEST_COUNT
+    )
     availability = db.query(
         """WITH stock AS (
                SELECT item_id,SUM(qty) qty FROM lot

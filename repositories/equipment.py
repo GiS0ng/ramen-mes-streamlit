@@ -107,3 +107,18 @@ def operation_history() -> pd.DataFrame:
            LEFT JOIN item i ON i.item_id=pr.item_id
            ORDER BY eo.operation_date DESC,eo.equipment_operation_id DESC"""
     )
+
+
+def worker_heartbeat() -> pd.DataFrame:
+    return db.dataframe(
+        """SELECT worker_name Worker,
+                  REPLACE(last_run_at,'T',' ') 마지막실행일시,
+                  CASE status
+                      WHEN 'RUNNING' THEN '정상 실행 중'
+                      WHEN 'ERROR' THEN '오류'
+                      WHEN 'STOPPED' THEN '중지'
+                  END 상태,
+                  message 최근처리결과
+           FROM worker_heartbeat
+           WHERE worker_name='production'"""
+    )

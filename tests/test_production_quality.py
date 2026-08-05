@@ -1,4 +1,5 @@
 import sys
+import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -25,6 +26,44 @@ def test_production_request_schema_supports_equipment():
     assert {"started_at", "planned_completion_at", "completed_at"} <= columns
     equipment_columns = {row[1] for row in db.query("PRAGMA table_info(equipment)")}
     assert "capacity_per_minute" in equipment_columns
+    assert db.query("PRAGMA user_version")[0][0] == db.SCHEMA_MIGRATION_VERSION
+
+
+def test_legacy_schema_adds_capacity_before_running_plan_migration():
+    connection = sqlite3.connect(":memory:")
+    connection.execute(
+        """CREATE TABLE equipment(
+               equipment_id INTEGER PRIMARY KEY,
+               equipment_code TEXT,
+               status TEXT
+           )"""
+    )
+    connection.execute(
+        """CREATE TABLE production_request(
+               production_request_id INTEGER PRIMARY KEY,
+               equipment_id INTEGER,
+               requested_qty INTEGER,
+               status TEXT,
+               created_at TEXT
+           )"""
+    )
+    connection.execute(
+        "CREATE TABLE shipment_detail(shipment_id INTEGER,product_lot_id INTEGER)"
+    )
+    connection.execute(
+        "CREATE TABLE packing_box_detail(packing_box_id INTEGER,product_lot_id INTEGER)"
+    )
+
+    db._migrate_schema(connection)
+
+    equipment_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(equipment)")
+    }
+    assert "capacity_per_minute" in equipment_columns
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == (
+        db.SCHEMA_MIGRATION_VERSION
+    )
+    connection.close()
 
 
 def test_create_production_plan_with_equipment_product_and_quantity():
@@ -212,6 +251,119 @@ def test_running_plan_is_completed_automatically_after_expected_minutes():
            WHERE production_request_id=?""",
         (plan_id,),
     )[0][0] == quantity
+
+
+def test_single_unit_plan_completes_after_thirty_seconds(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "thirty-seconds.db")
+    db.initialize()
+    product_id, product_code = db.query(
+        "SELECT item_id,item_code FROM item WHERE item_code='FG-RAMEN'"
+    )[0]
+    equipment_id = db.query(
+        "SELECT equipment_id FROM equipment WHERE equipment_code='EQ-PACK-01'"
+    )[0][0]
+    with db.transaction() as connection:
+        for material_code in PRODUCT_MATERIAL_CODES[product_code]:
+            material_id = connection.execute(
+                "SELECT item_id FROM item WHERE item_code=?", (material_code,)
+            ).fetchone()[0]
+            connection.execute(
+                """INSERT INTO lot(
+                       lot_no,item_id,lot_type,initial_qty,qty,received_date
+                   ) VALUES(?,?, 'RECEIPT',1,1,?)""",
+                (f"THIRTY-{material_code}", material_id, date.today().isoformat()),
+            )
+
+    plan_id = production.create_plan(equipment_id, product_id, 1)
+    started_at = datetime(2026, 8, 5, 9, 0, 0)
+    production.start_plan(plan_id, started_at=started_at)
+    planned_completion_at = db.query(
+        """SELECT planned_completion_at FROM production_request
+           WHERE production_request_id=?""",
+        (plan_id,),
+    )[0][0]
+    assert planned_completion_at == (
+        started_at + timedelta(seconds=30)
+    ).isoformat(timespec="seconds")
+    assert production.auto_complete_due_plans(
+        started_at + timedelta(seconds=29)
+    ) == []
+    assert production.auto_complete_due_plans(
+        started_at + timedelta(seconds=30)
+    ) == [plan_id]
+
+
+def test_start_plan_reserves_material_for_its_equipment(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "reservations.db")
+    db.initialize()
+    product_id, product_code = db.query(
+        "SELECT item_id,item_code FROM item WHERE item_code='FG-RAMEN'"
+    )[0]
+    with db.transaction() as connection:
+        for material_code in PRODUCT_MATERIAL_CODES[product_code]:
+            material_id = connection.execute(
+                "SELECT item_id FROM item WHERE item_code=?", (material_code,)
+            ).fetchone()[0]
+            connection.execute(
+                """INSERT INTO lot(
+                       lot_no,item_id,lot_type,initial_qty,qty,received_date
+                   ) VALUES(?,?, 'RECEIPT',1,1,?)""",
+                (f"RESERVE-{material_code}", material_id, date.today().isoformat()),
+            )
+        connection.execute(
+            """INSERT INTO equipment(
+                   equipment_code,equipment_name,equipment_type,location,
+                   capacity_per_minute
+               ) VALUES('EQ-PACK-02','라면 포장 2호기','포장설비','1공장',2)"""
+        )
+
+    equipment_ids = [
+        int(row[0])
+        for row in db.query("SELECT equipment_id FROM equipment ORDER BY equipment_id")
+    ]
+    first_plan_id = production.create_plan(equipment_ids[0], product_id, 1)
+    second_plan_id = production.create_plan(equipment_ids[1], product_id, 1)
+    production.start_plan(first_plan_id)
+
+    assert db.query(
+        """SELECT COUNT(*) FROM production_material_reservation
+           WHERE production_request_id=?""",
+        (first_plan_id,),
+    )[0][0] == 3
+    with pytest.raises(ValueError, match="예약 가능한 낱개 LOT 재고"):
+        production.start_plan(second_plan_id)
+    assert db.query(
+        "SELECT status FROM production_request WHERE production_request_id=?",
+        (second_plan_id,),
+    )[0][0] == "PLANNED"
+
+
+def test_running_plan_errors_do_not_block_later_plans(monkeypatch):
+    started_at = datetime(2026, 8, 5, 9, 0, 0)
+    now = started_at + timedelta(minutes=1)
+    monkeypatch.setattr(
+        production.db,
+        "query",
+        lambda *args, **kwargs: [
+            (101, started_at.isoformat(), now.isoformat(), 2, 2),
+            (102, started_at.isoformat(), now.isoformat(), 2, 2),
+        ],
+    )
+    processed: list[int] = []
+
+    def fake_advance(plan_id, target_quantity, production_date):
+        processed.append(plan_id)
+        if plan_id == 101:
+            raise ValueError("원재료 부족")
+        return target_quantity
+
+    monkeypatch.setattr(production, "_advance_plan", fake_advance)
+    failures: dict[int, str] = {}
+    created = production.advance_running_plans(now, failures=failures)
+
+    assert processed == [101, 102]
+    assert created == {102: 2}
+    assert failures == {101: "원재료 부족"}
 
 
 def test_defect_lot_lookup_filters_by_equipment_and_production_date():

@@ -61,17 +61,32 @@ def fulfill_schedule(schedule_id: int, shipment_date: str) -> int:
         customer_id, item_id, remaining_quantity = schedule
         remaining_quantity = int(remaining_quantity)
 
-        product_lots = connection.execute(
-            """SELECT lot_id,qty FROM lot
-               WHERE item_id=? AND lot_type='PRODUCTION' AND qty>0
-               ORDER BY produced_date,lot_id""",
-            (item_id,),
+        if remaining_quantity % BOX_SIZE:
+            raise ValueError("출하계획 수량은 40개입 박스 단위여야 합니다.")
+        required_box_quantity = remaining_quantity // BOX_SIZE
+        available_boxes = connection.execute(
+            """SELECT pb.packing_box_id
+               FROM packing_box pb
+               JOIN packing_box_detail pbd USING(packing_box_id)
+               JOIN lot l ON l.lot_id=pbd.product_lot_id
+               JOIN production p ON p.output_lot_id=l.lot_id
+               LEFT JOIN shipment_box sb USING(packing_box_id)
+               WHERE p.item_id=? AND sb.shipment_box_id IS NULL
+                 AND NOT EXISTS(
+                     SELECT 1 FROM production_defect pd
+                     WHERE pd.production_id=p.production_id
+                 )
+               GROUP BY pb.packing_box_id
+               HAVING COUNT(*)=?
+                  AND SUM(CASE WHEN l.qty>=1 THEN 1 ELSE 0 END)=?
+               ORDER BY pb.packed_date,pb.packing_box_id
+               LIMIT ?""",
+            (item_id, BOX_SIZE, BOX_SIZE, required_box_quantity),
         ).fetchall()
-        stock_quantity = sum(float(row[1]) for row in product_lots)
-        if stock_quantity < remaining_quantity:
+        if len(available_boxes) < required_box_quantity:
             raise ValueError(
-                f"완제품 재고가 부족합니다. 필요 {remaining_quantity}개, "
-                f"현재 {int(stock_quantity)}개"
+                f"출고 가능한 완제품 박스가 부족합니다. "
+                f"필요 {required_box_quantity}박스, 현재 {len(available_boxes)}박스"
             )
 
         next_id = int(connection.execute(
@@ -86,18 +101,23 @@ def fulfill_schedule(schedule_id: int, shipment_date: str) -> int:
             (shipment_no, schedule_id, customer_id, shipment_date),
         ).lastrowid)
 
-        quantity_to_ship = float(remaining_quantity)
-        for lot_id, lot_quantity in product_lots:
-            if quantity_to_ship <= 0:
-                break
-            shipped_quantity = min(float(lot_quantity), quantity_to_ship)
+        for (packing_box_id,) in available_boxes:
             connection.execute(
+                """INSERT INTO shipment_box(shipment_id,packing_box_id)
+                   VALUES(?,?)""",
+                (shipment_id, packing_box_id),
+            )
+            product_lots = connection.execute(
+                """SELECT product_lot_id FROM packing_box_detail
+                   WHERE packing_box_id=? ORDER BY packing_box_detail_id""",
+                (packing_box_id,),
+            ).fetchall()
+            connection.executemany(
                 """INSERT INTO shipment_detail(
                        shipment_id,product_lot_id,shipment_qty
-                   ) VALUES(?,?,?)""",
-                (shipment_id, lot_id, shipped_quantity),
+                   ) VALUES(?,?,1)""",
+                [(shipment_id, int(row[0])) for row in product_lots],
             )
-            quantity_to_ship -= shipped_quantity
 
         connection.execute(
             "UPDATE shipment SET status='SHIPPED' WHERE shipment_id=?",

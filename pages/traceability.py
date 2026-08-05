@@ -110,6 +110,14 @@ elif direction.startswith("박스"):
     options = db.options("SELECT pb.packing_box_id,pb.box_no||' · 40개' FROM packing_box pb ORDER BY pb.packed_date DESC,pb.box_no")
     chosen = select_id("박스번호", options, "trace_box")
     if chosen:
+        grid("""SELECT pb.box_no 박스번호,
+        CASE WHEN sb.shipment_box_id IS NULL THEN '재고' ELSE '출고 완료' END 박스상태,
+        s.shipment_no 출고번호,bp.partner_name 고객사,s.shipment_date 출고일
+        FROM packing_box pb
+        LEFT JOIN shipment_box sb USING(packing_box_id)
+        LEFT JOIN shipment s USING(shipment_id)
+        LEFT JOIN business_partner bp ON bp.partner_id=s.customer_id
+        WHERE pb.packing_box_id=?""", (chosen,), 120)
         grid("""SELECT pb.box_no 박스번호,pb.box_qty 포장수량,pb.packed_date 포장일,
         l.lot_no 완제품LOT,i.item_code 제품코드,i.item_name 제품,p.production_no 생산번호,
         p.production_date 생산일,l.qty LOT현재재고

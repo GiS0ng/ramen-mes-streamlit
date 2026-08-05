@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -9,17 +10,22 @@ from typing import Sequence
 
 import pandas as pd
 
-from domain.rules import PACKAGING_CAPACITY_PER_MINUTE, RAW_MATERIAL_SAFETY_STOCK
+from domain.rules import (
+    BOX_SIZE,
+    PACKAGING_CAPACITY_PER_MINUTE,
+    RAW_MATERIAL_SAFETY_STOCK,
+)
 
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
-DB_PATH = DATA_DIR / "mes.db"
+DB_PATH = Path(os.environ.get("MES_DB_PATH", DATA_DIR / "mes.db"))
 SCHEMA_PATH = ROOT / "schema.sql"
+SCHEMA_MIGRATION_VERSION = 1
 
 
 def connect() -> sqlite3.Connection:
-    DATA_DIR.mkdir(exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH, timeout=10)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
@@ -61,11 +67,25 @@ def _migrate_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             "ALTER TABLE production_request ADD COLUMN equipment_id INTEGER REFERENCES equipment(equipment_id)"
         )
+
+    equipment_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(equipment)")
+    }
+    if equipment_columns and "capacity_per_minute" not in equipment_columns:
+        connection.execute(
+            """ALTER TABLE equipment ADD COLUMN capacity_per_minute REAL
+               NOT NULL DEFAULT 1 CHECK(capacity_per_minute>0)"""
+        )
+
     for column in ("started_at", "planned_completion_at", "completed_at"):
         if column not in production_request_columns:
             connection.execute(
                 f"ALTER TABLE production_request ADD COLUMN {column} TEXT"
             )
+
+    schema_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if schema_version >= SCHEMA_MIGRATION_VERSION:
+        return
 
     legacy_running_plans = connection.execute(
         """SELECT pr.production_request_id,pr.started_at,pr.created_at,
@@ -78,7 +98,7 @@ def _migrate_schema(connection: sqlite3.Connection) -> None:
     for plan_id, started_at, created_at, quantity, capacity in legacy_running_plans:
         effective_start = datetime.fromisoformat(started_at or created_at)
         planned_completion = effective_start + timedelta(
-            minutes=ceil(int(quantity) / float(capacity))
+            seconds=ceil(int(quantity) / float(capacity) * 60)
         )
         connection.execute(
             """UPDATE production_request
@@ -91,20 +111,62 @@ def _migrate_schema(connection: sqlite3.Connection) -> None:
             ),
         )
 
-    equipment_columns = {
-        row[1] for row in connection.execute("PRAGMA table_info(equipment)")
-    }
-    if equipment_columns and "capacity_per_minute" not in equipment_columns:
-        connection.execute(
-            """ALTER TABLE equipment ADD COLUMN capacity_per_minute REAL
-               NOT NULL DEFAULT 1 CHECK(capacity_per_minute>0)"""
-        )
     connection.execute(
         """UPDATE equipment SET capacity_per_minute=?
            WHERE equipment_code IN ('EQ-PACK-01','EQ-PACK-02')
              AND capacity_per_minute=1""",
         (PACKAGING_CAPACITY_PER_MINUTE,),
     )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS production_material_reservation (
+               production_material_reservation_id INTEGER PRIMARY KEY,
+               production_request_id INTEGER NOT NULL
+                   REFERENCES production_request(production_request_id)
+                   ON DELETE CASCADE,
+               material_lot_id INTEGER NOT NULL UNIQUE REFERENCES lot(lot_id),
+               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+               UNIQUE(production_request_id,material_lot_id)
+           )"""
+    )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS idx_material_reservation_request
+           ON production_material_reservation(production_request_id)"""
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS shipment_box (
+               shipment_box_id INTEGER PRIMARY KEY,
+               shipment_id INTEGER NOT NULL
+                   REFERENCES shipment(shipment_id) ON DELETE CASCADE,
+               packing_box_id INTEGER NOT NULL UNIQUE
+                   REFERENCES packing_box(packing_box_id),
+               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+               UNIQUE(shipment_id,packing_box_id)
+           )"""
+    )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS idx_shipment_box_shipment
+           ON shipment_box(shipment_id)"""
+    )
+    connection.execute(
+        """INSERT OR IGNORE INTO shipment_box(shipment_id,packing_box_id)
+           SELECT sd.shipment_id,pbd.packing_box_id
+           FROM shipment_detail sd
+           JOIN packing_box_detail pbd
+             ON pbd.product_lot_id=sd.product_lot_id
+           GROUP BY sd.shipment_id,pbd.packing_box_id
+           HAVING COUNT(*)=?""",
+        (BOX_SIZE,),
+    )
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS worker_heartbeat (
+               worker_name TEXT PRIMARY KEY,
+               last_run_at TEXT NOT NULL,
+               status TEXT NOT NULL
+                   CHECK(status IN ('RUNNING','ERROR','STOPPED')),
+               message TEXT
+           )"""
+    )
+    connection.execute(f"PRAGMA user_version = {SCHEMA_MIGRATION_VERSION}")
 
 
 def execute(sql: str, params: Sequence = ()) -> int:
@@ -179,9 +241,10 @@ def seed_masters() -> None:
 def reset_demo() -> None:
     initialize()
     tables = [
-        "equipment_operation", "production_defect", "defect_code",
+        "equipment_operation", "production_defect", "defect_code", "shipment_box",
         "shipment_detail", "shipment", "shipment_schedule", "packing_box_detail", "packing_box",
-        "product_box", "production_request_unit", "production_request", "material_receipt",
+        "product_box", "production_material_reservation", "production_request_unit",
+        "production_request", "material_receipt",
         "purchase_order_detail", "purchase_order", "production_material",
         "production", "lot", "equipment", "business_partner", "item",
     ]

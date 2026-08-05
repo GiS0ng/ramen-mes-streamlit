@@ -12,14 +12,11 @@ operation_tab, result_tab = st.tabs(["생산계획 가동", "성과 조회"])
 
 @st.fragment(run_every="10s")
 def operation_panel() -> None:
-    try:
-        completed = production.auto_complete_due_plans()
-        if completed:
-            st.success(
-                f"가동시간이 경과한 생산계획 {len(completed)}건을 자동 완료했습니다."
-            )
-    except Exception as exc:
-        st.error(f"생산계획 자동 완료 중 오류가 발생했습니다: {exc}")
+    heartbeat = equipment_repository.worker_heartbeat()
+    if heartbeat.empty:
+        st.warning("백그라운드 생산 Worker의 실행 기록이 없습니다.")
+    else:
+        show_frame(heartbeat, height=82)
 
     st.subheader("가동 대기 생산계획")
     planned = equipment_repository.plans("PLANNED")

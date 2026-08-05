@@ -1,0 +1,15 @@
+[Unit]
+Description=Ramen MES Production Worker (User Service)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/smart/work/mespython
+Environment=PYTHONUNBUFFERED=1
+Environment=MES_PRODUCTION_INTERVAL_SECONDS=5
+ExecStart=/home/smart/work/mespython/.venv/bin/python -m workers.production_worker
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
