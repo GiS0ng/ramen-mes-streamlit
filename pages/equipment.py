@@ -7,7 +7,7 @@ from services import production
 from ui.components import run_action, select_id, show_frame
 
 
-st.title("설비 성과")
+st.title("설비")
 operation_tab, result_tab = st.tabs(["생산계획 가동", "성과 조회"])
 
 @st.fragment(run_every="10s")
