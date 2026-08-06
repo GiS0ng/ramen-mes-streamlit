@@ -34,7 +34,7 @@ pages = {
     "생산 관리": [
         st.Page("pages/dashboard.py", title="생산현황 대시보드", icon="🏭", default=True),
         st.Page("pages/production_quality.py", title="생산 계획·품질 관리", icon="⚙️"),
-        st.Page("pages/equipment.py", title="설비 성과", icon="📊"),
+        st.Page("pages/equipment.py", title="설비", icon="📊"),
     ],
     "자재·물류": [
         st.Page("pages/purchasing.py", title="구매·입고 관리", icon="📦"),
